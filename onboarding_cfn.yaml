@@ -1,0 +1,128 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  ACCIO Platform — Cross-account IAM roles for Observatory cluster provisioning.
+  Deploy this stack exactly once in your AWS account. It creates two IAM roles
+  that allow the ACCIO platform to provision and monitor EKS clusters on your
+  behalf. No IAM users or long-lived access keys are created.
+
+Parameters:
+  AccioAccountId:
+    Type: String
+    Default: "ACCIO_PLATFORM_ACCOUNT_ID"
+    Description: >
+      The AWS Account ID of the ACCIO platform. Do NOT change this value.
+      It restricts role access exclusively to the ACCIO control plane.
+    AllowedPattern: "[0-9]{12}"
+    ConstraintDescription: Must be a valid 12-digit AWS Account ID.
+
+Resources:
+
+  # ── Role 1: Provisioner ───────────────────────────────────────────────────
+  # Assumed by ACCIO's CodeBuild role during Terraform apply/destroy.
+  # Grants AdministratorAccess so Terraform can create EKS, VPC, IAM, EC2.
+  # Will be scoped down to a least-privilege policy in v2 (issue ACCIO-88).
+  AccioPlatformProvisioner:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: accio-platform-provisioner
+      Description: "Assumed by ACCIO CodeBuild to run Terraform in this account"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: TrustAccioCodeBuild
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AccioAccountId}:role/accio-codebuild-role"
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                # ExternalId prevents confused-deputy attacks.
+                # CodeBuild sends this value via --external-id in sts:assume_role.
+                sts:ExternalId: "accio-provisioner-v1"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+      Tags:
+        - Key: managed-by
+          Value: accio-platform
+        - Key: version
+          Value: v1
+
+  # ── Role 2: Reader ────────────────────────────────────────────────────────
+  # Assumed by ACCIO's Lambda functions to read cluster status and logs.
+  # Read-only: EKS describe, CloudWatch metrics, CloudWatch Logs for EKS.
+  AccioPlatformReader:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: accio-platform-reader
+      Description: "Assumed by ACCIO Lambda to read cluster status and logs"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: TrustAccioLambda
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AccioAccountId}:role/accio-lambda-role"
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: "accio-reader-v1"
+      Policies:
+        - PolicyName: accio-reader-policy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+
+              # EKS — describe clusters and node groups (no write permissions)
+              - Sid: EKSRead
+                Effect: Allow
+                Action:
+                  - eks:DescribeCluster
+                  - eks:ListClusters
+                  - eks:DescribeNodegroup
+                  - eks:ListNodegroups
+                Resource: "*"
+
+              # CloudWatch Metrics — Container Insights (CPU, memory, network)
+              - Sid: CloudWatchMetrics
+                Effect: Allow
+                Action:
+                  - cloudwatch:GetMetricStatistics
+                  - cloudwatch:GetMetricData
+                  - cloudwatch:ListMetrics
+                Resource: "*"
+
+              # CloudWatch Logs — EKS cluster log groups only (scoped by ARN)
+              - Sid: CloudWatchLogs
+                Effect: Allow
+                Action:
+                  - logs:FilterLogEvents
+                  - logs:GetLogEvents
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                Resource:
+                  - !Sub "arn:aws:logs:*:${AWS::AccountId}:log-group:/aws/eks/*"
+                  - !Sub "arn:aws:logs:*:${AWS::AccountId}:log-group:/aws/eks/*:*"
+
+      Tags:
+        - Key: managed-by
+          Value: accio-platform
+        - Key: version
+          Value: v1
+
+Outputs:
+
+  ProvisionerRoleArn:
+    Description: ARN of the provisioner role
+    Value: !GetAtt AccioPlatformProvisioner.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-ProvisionerRoleArn"
+
+  ReaderRoleArn:
+    Description: ARN of the reader role
+    Value: !GetAtt AccioPlatformReader.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-ReaderRoleArn"
+
+  StackStatus:
+    Description: Confirmation message shown in Observatory app after stack creation
+    Value: "ACCIO IAM roles deployed successfully. Return to the Observatory app and tap Verify Setup."
