@@ -92,6 +92,18 @@ resource "aws_iam_role_policy" "lambda_platform" {
         ]
       },
 
+      # Step Functions — send task token callbacks (start_codebuild Lambda)
+      {
+        Sid    = "StepFunctionsTaskCallback"
+        Effect = "Allow"
+        Action = [
+          "states:SendTaskSuccess",
+          "states:SendTaskFailure",
+          "states:SendTaskHeartbeat",
+        ]
+        Resource = "*"
+      },
+
       # STS — assume cross-account reader role in customer accounts
       {
         Sid    = "STSAssumeReader"

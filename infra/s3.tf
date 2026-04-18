@@ -74,8 +74,7 @@ resource "aws_s3_bucket_public_access_block" "tf_state" {
 # ---------------------------------------------------------------------------
 
 resource "aws_s3_bucket" "outputs" {
-  bucket = "${local.bucket_prefix}-outputs"
-  bucket_namespace = "account-regional"
+  bucket = "${local.bucket_prefix}-outputs-${local.account_id}"
 }
 
 resource "aws_s3_bucket_versioning" "outputs" {
@@ -182,8 +181,7 @@ resource "aws_s3_object" "onboarding_cfn_template" {
 # ---------------------------------------------------------------------------
 
 resource "aws_s3_bucket" "web_app" {
-  bucket = "${local.bucket_prefix}-web-app"
-  bucket_namespace = "account-regional"
+  bucket = "${local.bucket_prefix}-web-app-${local.account_id}"
   
 }
 
