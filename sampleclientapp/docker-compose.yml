@@ -1,0 +1,76 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: sampleapp
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d sampleapp"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  nats:
+    image: nats:latest
+    ports:
+      - "4222:4222"
+
+  orchestrator:
+    build:
+      context: ./orchestrator
+    ports:
+      - "8080:8080"
+    environment:
+      - DATABASE_URL=postgres://user:password@postgres:5432/sampleapp?sslmode=disable
+      - NATS_URL=nats://nats:4222
+      - PORT=8080
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_started
+
+  worker:
+    build:
+      context: ./worker
+    environment:
+      - DATABASE_URL=postgres://user:password@postgres:5432/sampleapp?sslmode=disable
+      - NATS_URL=nats://nats:4222
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_started
+
+  notification:
+    build:
+      context: ./notification
+    environment:
+      - NATS_URL=nats://nats:4222
+    depends_on:
+      nats:
+        condition: service_started
+
+  verifier:
+    build:
+      context: ./verifier
+    environment:
+      - DATABASE_URL=postgres://user:password@postgres:5432/sampleapp
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - orchestrator
