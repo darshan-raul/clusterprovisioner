@@ -27,11 +27,11 @@ For the full plan, locked decisions, and phase roadmap, see
 
 ## Status
 
-**Phase 0 — Reset + TUI graduation.** The TUI smoke test passes;
-the backend doesn't exist yet.
+**Phase 1 — Backend skeleton + FastMCP k8s server.** Complete. The TUI connects to the kind-hosted backend orchestrator, authenticates via Keycloak JWT, and proxies `:get pods` requests through FastMCP.
 
 ```bash
-cd tui && uv sync && uv run strata
+make e2e         # run kind e2e validation
+make tui-dev     # launch local TUI
 ```
 
 ## License

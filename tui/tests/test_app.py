@@ -1,23 +1,17 @@
-"""Strata TUI tests.
+"""Tests for the Strata TUI App.
 
-The current tests are smoke tests: they verify the App boots,
-the LLM initializes, the chat pipeline produces a response, and
-``:get`` commands return the Phase 0 placeholder. Real agent
-graph + MCP tests land in Phase 1.
-
-Tests use Textual's ``App.run_test`` async harness; no real LLM
-network call is made (``FakeListChatModel`` from
-``langchain-core`` is wired in by patching
-``strata_tui.app.ChatOpenAI``).
+The chat surface uses a FakeListChatModel (no network). The
+backend client is mocked via respx.
 """
+
 from __future__ import annotations
 
 import pytest
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
-from textual.widgets import Input
 
 from strata_tui.app import StrataTUIApp
 from strata_tui.widgets.history import MessageHistory
+from strata_tui.widgets.resource_table import ResourceTable
 from strata_tui.widgets.status_bar import StatusBar
 
 
@@ -33,7 +27,7 @@ def fake_llm(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_app_starts_and_sends_chat(fake_llm) -> None:
-    """End-to-end smoke test: type, send, see the AI reply."""
+    """End-to-end smoke: type, send, see the AI reply."""
     app = StrataTUIApp()
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -48,42 +42,102 @@ async def test_app_starts_and_sends_chat(fake_llm) -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_command_returns_placeholder(fake_llm) -> None:
-    """``:get pods`` should print the placeholder, no LLM call."""
+async def test_help_command_shows_help(fake_llm) -> None:
+    """``:help`` prints the command list into the history."""
     app = StrataTUIApp()
     async with app.run_test() as pilot:
         await pilot.pause()
         await pilot.click("#input")
-        await pilot.press(*":get pods")
+        await pilot.press(*":help")
         await pilot.press("enter")
         await pilot.pause()
         history = app.query_one("#history", MessageHistory)
         all_text = "\n".join(str(line) for line in history.lines)
-        assert "not implemented" in all_text.lower()
+        assert ":login" in all_text
+        assert ":get pods" in all_text
 
 
 @pytest.mark.asyncio
-async def test_status_bar_shows_model(fake_llm) -> None:
-    """Status bar should display the configured model name."""
+async def test_status_bar_mentions_user(fake_llm) -> None:
+    """The status bar starts with the placeholder user before login."""
     app = StrataTUIApp()
     async with app.run_test() as pilot:
         await pilot.pause()
         status = app.query_one("#status", StatusBar)
-        assert "MiniMax-M3" in str(status.render())
+        text = str(status.render())
+        assert "user:" in text
+        assert "cluster:" in text
 
 
 @pytest.mark.asyncio
-async def test_clear_binding_wipes_history(fake_llm) -> None:
-    """Ctrl+L should clear the message history."""
+async def test_get_command_routes_to_handler(fake_llm, monkeypatch) -> None:
+    """``:get pods`` should call the GetCommand (which calls the client)."""
+    seen: list[tuple[str, list[str]]] = []
+
+    async def fake_execute(self, args):
+        seen.append(("get", args))
+        # Also exercise the resource table code path
+        rt = self.app.resource_table
+        rt.replace([{"name": "p1", "namespace": "default", "phase": "Running"}])
+
+    monkeypatch.setattr("strata_tui.commands.get.GetCommand.execute", fake_execute)
+
+    app = StrataTUIApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # Bypass the login requirement by injecting a client directly.
+        app._client = _FakeClient()
+        app._active_cluster = _FakeCluster()
+        await pilot.click("#input")
+        await pilot.press(*":get pods")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert ("get", ["pods"]) in seen
+        rt = app.query_one("#resource-table", ResourceTable)
+        assert len(rt._rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_ctx_list_routes_to_handler(fake_llm, monkeypatch) -> None:
+    """``:ctx list`` should call the ContextCommand."""
+
+    seen: list[tuple[str, list[str]]] = []
+
+    async def fake_execute(self, args):
+        seen.append(("ctx", args))
+
+    monkeypatch.setattr("strata_tui.commands.context.ContextCommand.execute", fake_execute)
+
     app = StrataTUIApp()
     async with app.run_test() as pilot:
         await pilot.pause()
         await pilot.click("#input")
-        await pilot.press(*"first message")
+        await pilot.press(*":ctx list")
         await pilot.press("enter")
         await pilot.pause()
-        await pilot.press("ctrl+l")
+        assert ("ctx", ["list"]) in seen
+
+
+@pytest.mark.asyncio
+async def test_unknown_command_writes_error(fake_llm) -> None:
+    """``:foobar`` writes a 'unknown command' error to history."""
+    app = StrataTUIApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.click("#input")
+        await pilot.press(*":foobar")
+        await pilot.press("enter")
         await pilot.pause()
         history = app.query_one("#history", MessageHistory)
-        assert history.lines == []
-        assert app.query_one("#input", Input) is not None
+        all_text = "\n".join(str(line) for line in history.lines)
+        assert "unknown command" in all_text
+
+
+class _FakeCluster:
+    id = "cl-test"
+    name = "demo"
+    context = "demo"
+
+
+class _FakeClient:
+    pass

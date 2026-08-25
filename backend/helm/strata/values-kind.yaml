@@ -1,0 +1,24 @@
+# kind-specific overrides. Smaller resources, no persistence of
+# Keycloak's local data (we re-import the realm on every install),
+# and pull-if-not-present for images loaded into kind via `kind load`.
+
+image:
+  tag: dev
+  pullPolicy: IfNotPresent
+
+orchestrator:
+  env:
+    LOG_LEVEL: debug
+
+keycloak:
+  # kind dev: ephemeral data; realm is re-imported on each install
+  persistence:
+    enabled: false
+  # Reduce Keycloak's resource asks so kind doesn't choke.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+
+# In kind, we port-forward Keycloak's admin UI on 8081 and the
+# backend's services through Envoy on 8443.

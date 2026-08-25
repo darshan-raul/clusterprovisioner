@@ -1,0 +1,93 @@
+{{- if .Values.mcpK8s.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mcp-k8s-kubeconfigs
+  namespace: strata
+  labels:
+    app.kubernetes.io/component: mcp-k8s
+    app.kubernetes.io/part-of: strata
+data:
+  cl-mock-01: |
+{{ .Values.mcpK8s.kubeconfigFixture | indent 4 }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mcp-k8s
+  namespace: strata
+  labels:
+    app.kubernetes.io/component: mcp-k8s
+    app.kubernetes.io/part-of: strata
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-k8s
+  namespace: strata
+  labels:
+    app.kubernetes.io/component: mcp-k8s
+    app.kubernetes.io/part-of: strata
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/component: mcp-k8s
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-k8s
+  namespace: strata
+  labels:
+    app.kubernetes.io/component: mcp-k8s
+    app.kubernetes.io/part-of: strata
+spec:
+  replicas: {{ .Values.mcpK8s.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: mcp-k8s
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: mcp-k8s
+        app.kubernetes.io/part-of: strata
+    spec:
+      serviceAccountName: mcp-k8s
+      containers:
+        - name: mcp-k8s
+          image: "{{ .Values.mcpK8s.image.repository }}:{{ .Values.mcpK8s.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            {{- range $k, $v := .Values.mcpK8s.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 8000
+          volumeMounts:
+            - name: kubeconfigs
+              mountPath: /etc/strata/kubeconfigs
+              readOnly: true
+          readinessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 50m
+              memory: 96Mi
+      volumes:
+        - name: kubeconfigs
+          configMap:
+            name: mcp-k8s-kubeconfigs
+{{- end }}

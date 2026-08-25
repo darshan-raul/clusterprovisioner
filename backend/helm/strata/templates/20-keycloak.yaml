@@ -1,0 +1,103 @@
+{{- if .Values.keycloak.enabled }}
+---
+# Phase 1 Keycloak. We render the official `quay.io/keycloak/keycloak`
+# Deployment directly (not via a Helm sub-chart) to keep one source
+# of truth for the version pin and avoid Bitnami image tag churn.
+#
+# The realm is imported via a separate Job (see 21-keycloak-bootstrap.yaml).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: keycloak
+  namespace: strata
+  labels:
+    app.kubernetes.io/component: keycloak
+    app.kubernetes.io/part-of: strata
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak
+  namespace: strata
+  labels:
+    app.kubernetes.io/component: keycloak
+    app.kubernetes.io/part-of: strata
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/component: keycloak
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak
+  namespace: strata
+  labels:
+    app.kubernetes.io/component: keycloak
+    app.kubernetes.io/part-of: strata
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: keycloak
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: keycloak
+        app.kubernetes.io/part-of: strata
+    spec:
+      serviceAccountName: keycloak
+      # Phase 1 dev: no persistence. Keycloak re-imports the realm on
+      # every restart via the bootstrap Job.
+      containers:
+        - name: keycloak
+          image: quay.io/keycloak/keycloak:26.0
+          args:
+            - "start-dev"
+            - "--import-realm"
+            - "--http-port=8080"
+          env:
+            - name: KEYCLOAK_ADMIN
+              value: {{ .Values.keycloak.auth.adminUser | quote }}
+            - name: KEYCLOAK_ADMIN_PASSWORD
+              value: {{ .Values.keycloak.auth.adminPassword | quote }}
+            # KC_FRONTEND_URL controls the `iss` claim Keycloak embeds
+            # in tokens. We pin it to the in-cluster URL so the
+            # orchestrator's JWKS validator (which compares against
+            # http://keycloak:8080/realms/strata-dev) matches.
+            - name: KC_FRONTEND_URL
+              value: {{ .Values.keycloak.frontendUrl | quote }}
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              # /realms/<name> returns 200 once Keycloak is ready to
+              # serve the realm. The standard /health/ready endpoint
+              # isn't exposed in dev mode by default.
+              path: /realms/{{ .Values.keycloak.realm.name }}
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          volumeMounts:
+            - name: realm
+              mountPath: /opt/keycloak/data/import
+              readOnly: true
+          resources:
+            {{- toYaml .Values.keycloak.resources | nindent 12 }}
+      volumes:
+        - name: realm
+          configMap:
+            name: strata-keycloak-realm
+{{- end }}

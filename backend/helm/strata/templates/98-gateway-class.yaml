@@ -1,0 +1,19 @@
+---
+# The GatewayClass (`eg`) is created by scripts/install-platform-deps.sh
+# before this chart runs. We declare the Gateway resource here.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: strata-gateway
+  namespace: strata
+  labels:
+    app.kubernetes.io/part-of: strata
+spec:
+  gatewayClassName: eg
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: All

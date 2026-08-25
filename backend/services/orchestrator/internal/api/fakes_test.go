@@ -1,0 +1,97 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"sync"
+
+	"github.com/strata/orchestrator/internal/store"
+)
+
+// fakeStore implements ClusterStore for tests.
+type fakeStore struct {
+	mu       sync.Mutex
+	users    map[string]store.User
+	clusters map[string]store.Cluster
+}
+
+func newFakeStore() *fakeStore {
+	return &fakeStore{
+		users:    map[string]store.User{},
+		clusters: map[string]store.Cluster{},
+	}
+}
+
+func (f *fakeStore) EnsureUser(_ context.Context, u store.User) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.users[u.ID] = u
+	return nil
+}
+
+func (f *fakeStore) ListClusters(_ context.Context, userID string) ([]store.Cluster, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]store.Cluster, 0, len(f.clusters))
+	for _, c := range f.clusters {
+		if c.UserID == userID {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeStore) GetCluster(_ context.Context, userID, clusterID string) (*store.Cluster, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c, ok := f.clusters[clusterID]
+	if !ok || c.UserID != userID {
+		return nil, store.ErrNotFound
+	}
+	return &c, nil
+}
+
+// CreateCluster is a test helper — production code uses *store.Store.
+func (f *fakeStore) CreateCluster(_ context.Context, c store.Cluster, path string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c.KubeconfigPath = path
+	f.clusters[c.ID] = c
+	return nil
+}
+
+// fakeMCP implements MCPCaller for tests. The configured result is
+// returned verbatim. failWith, if set, makes CallToolWithHeaders
+// return an error.
+type fakeMCP struct {
+	mu       sync.Mutex
+	result   json.RawMessage
+	calls    []mcpCall
+	failWith error
+}
+
+type mcpCall struct {
+	Name    string
+	Args    map[string]any
+	Headers http.Header
+}
+
+func newFakeMCP() *fakeMCP {
+	return &fakeMCP{result: json.RawMessage(`[{"name":"p1"}]`)}
+}
+
+func (f *fakeMCP) CallToolWithHeaders(_ context.Context, name string, args map[string]any, headers http.Header) (json.RawMessage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failWith != nil {
+		return nil, f.failWith
+	}
+	f.calls = append(f.calls, mcpCall{Name: name, Args: args, Headers: headers})
+	return f.result, nil
+}
+
+// errMCP is a sentinel for tests that need to assert on a specific
+// error path.
+var errMCP = errors.New("mcp: simulated failure")

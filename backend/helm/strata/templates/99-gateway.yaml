@@ -1,0 +1,47 @@
+---
+# HTTPRoutes for the Strata backend services.
+# Phase 1 verification uses kubectl port-forward; these routes
+# become meaningful in Phase 2 once the TUI talks through Envoy.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: strata-orchestrator
+  namespace: strata
+  labels:
+    app.kubernetes.io/component: orchestrator-route
+    app.kubernetes.io/part-of: strata
+spec:
+  parentRefs:
+    - name: strata-gateway
+      namespace: strata
+  hostnames: ["orchestrator.strata.local"]
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: orchestrator
+          port: 8080
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: strata-mcp-k8s
+  namespace: strata
+  labels:
+    app.kubernetes.io/component: mcp-k8s-route
+    app.kubernetes.io/part-of: strata
+spec:
+  parentRefs:
+    - name: strata-gateway
+      namespace: strata
+  hostnames: ["mcp-k8s.strata.local"]
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: mcp-k8s
+          port: 8000

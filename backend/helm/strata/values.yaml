@@ -1,0 +1,86 @@
+# Default values for the Strata umbrella chart.
+# Overrides for kind dev live in values-kind.yaml.
+
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  registry: ghcr.io
+  org: strata
+  tag: "0.1.0-dev"
+  pullPolicy: IfNotPresent
+
+# ── Strata services ─────────────────────────────────────────────────────────
+orchestrator:
+  enabled: true
+  replicas: 1
+  image:
+    repository: strata-orchestrator
+    tag: dev
+  env:
+    LOG_LEVEL: info
+    HTTP_ADDR: ":8080"
+    KEYCLOAK_URL: http://keycloak:8080
+    KEYCLOAK_REALM: strata-dev
+    JWT_AUDIENCE: strata-tui
+    MCP_K8S_URL: http://mcp-k8s:8000/mcp
+    # DATABASE_URL is set by the orchestrator's Deployment env to point
+    # at the in-namespace postgres service. Don't override here.
+  bootstrapAdminToken: ""
+
+mcpK8s:
+  enabled: true
+  replicas: 1
+  image:
+    repository: strata-mcp-k8s
+    tag: dev
+  env:
+    LOG_LEVEL: info
+    MCP_HOST: "0.0.0.0"
+    MCP_PORT: "8000"
+    MCP_STATELESS: "true"
+  # Phase 1: kubeconfig path is mounted via a ConfigMap. Phase 4
+  # replaces this with KMS-encrypted creds.
+  kubeconfigFixture: |
+    apiVersion: v1
+    kind: Config
+    clusters:
+    - cluster:
+        server: https://mock-cluster.invalid
+      name: mock-cluster
+    contexts:
+    - context:
+        cluster: mock-cluster
+        user: mock-user
+      name: mock-cluster
+    current-context: mock-cluster
+    users:
+    - name: mock-user
+      user: {}
+
+# ── Keycloak ───────────────────────────────────────────────────────────────
+keycloak:
+  enabled: true
+  auth:
+    adminUser: admin
+    adminPassword: admin
+  # The URL Keycloak puts in the `iss` claim of every token.
+  # In-cluster: http://keycloak:8080 (matches the orchestrator's
+  # KEYCLOAK_URL). Override in values-prod.yaml for production.
+  frontendUrl: http://keycloak:8080
+  realm:
+    name: strata-dev
+  http:
+    enabled: true
+  ingress:
+    enabled: false
+
+# ── Backend services in dev mode ───────────────────────────────────────────
+qdrant:
+  enabled: false  # Phase 6
+
+# ── Service ports (used by the kind port mapping + port-forward) ───────────
+ports:
+  keycloak: 8080
+  web: 3000
+  orchestrator: 8080

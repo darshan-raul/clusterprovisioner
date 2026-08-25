@@ -1,0 +1,31 @@
+apiVersion: v2
+name: strata
+description: Strata — TUI + multi-tenant backend for managing existing k8s clusters
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+icon: https://strata.example/icon.png
+home: https://github.com/strata/strata
+sources:
+  - https://github.com/strata/strata
+keywords:
+  - kubernetes
+  - ai
+  - mcp
+  - langgraph
+  - terminal
+maintainers:
+  - name: Strata
+    email: ops@strata.example
+dependencies: []
+  # Phase 1 dev: we run a plain Postgres Deployment (see templates/15-postgres.yaml)
+  # rather than CloudNativePG. CNPG returns in Phase 8 (real EKS) for PITR + backups.
+  # Phase 1 orchestration is otherwise identical — the orchestrator talks to
+  # postgres over the standard wire protocol.
+
+# Notes for the operator:
+# - Envoy Gateway is installed by raw manifests from upstream.
+# - Keycloak is installed from quay.io/keycloak/keycloak as a raw manifest
+#   (see templates/20-keycloak.yaml) rather than via a Helm chart — the
+#   Bitnami chart's image tag mismatches and we want a single source of
+#   truth for the version pin.

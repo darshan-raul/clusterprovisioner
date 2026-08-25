@@ -1,0 +1,17 @@
+{{- if .Values.keycloak.enabled }}
+---
+# The realm ConfigMap is mounted into Keycloak at /opt/keycloak/data/import.
+# Keycloak's --import-realm flag (set in the Deployment) imports any *.json
+# file found there at startup.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: strata-keycloak-realm
+  namespace: strata
+  labels:
+    app.kubernetes.io/component: keycloak
+    app.kubernetes.io/part-of: strata
+data:
+  realm.json: |-
+{{ .Files.Get "keycloak/realm.json" | indent 4 }}
+{{- end }}

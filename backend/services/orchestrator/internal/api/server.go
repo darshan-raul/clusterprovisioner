@@ -1,0 +1,308 @@
+// Package api wires the orchestrator's HTTP surface.
+//
+// Endpoints:
+//
+//	GET  /healthz                       — liveness/readiness
+//	GET  /api/v1/me                     — current JWT claims (auth required)
+//	GET  /api/v1/clusters               — list user's clusters (Phase 1+)
+//	GET  /api/v1/clusters/{id}/pods     — proxy to MCP k8s list_pods
+//
+// Phase 1's only cluster-tool endpoint is /pods; other resource kinds
+// land when we add them to the MCP server.
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+	chimw "github.com/go-chi/chi/v5/middleware"
+	"github.com/rs/zerolog"
+
+	"github.com/strata/orchestrator/internal/config"
+	"github.com/strata/orchestrator/internal/store"
+	"github.com/strata/shared/pkg/jwks"
+)
+
+// Server is the orchestrator's HTTP handler.
+type Server struct {
+	cfg       config.Config
+	log       zerolog.Logger
+	jwks      *jwks.Validator
+	store     ClusterStore
+	mcp       MCPCaller
+	healthzAt time.Time
+}
+
+// ClusterStore is the subset of *store.Store that handlers use.
+// Defined as an interface so handlers can be unit-tested with a
+// fake (see server_test.go).
+type ClusterStore interface {
+	EnsureUser(ctx context.Context, u store.User) error
+	ListClusters(ctx context.Context, userID string) ([]store.Cluster, error)
+	GetCluster(ctx context.Context, userID, clusterID string) (*store.Cluster, error)
+}
+
+// MCPCaller is the subset of the MCP client that the handlers use.
+// Defined as an interface for testing.
+type MCPCaller interface {
+	CallToolWithHeaders(ctx context.Context, name string, args map[string]any, headers http.Header) (json.RawMessage, error)
+}
+
+// New constructs a Server. jwksValidator is required.
+func New(cfg config.Config, log zerolog.Logger, jwksValidator *jwks.Validator, st ClusterStore, mcpClient MCPCaller) *Server {
+	return &Server{
+		cfg:       cfg,
+		log:       log,
+		jwks:      jwksValidator,
+		store:     st,
+		mcp:       mcpClient,
+		healthzAt: time.Now(),
+	}
+}
+
+// Router builds the chi router with all routes attached.
+func (s *Server) Router() http.Handler {
+	r := chi.NewRouter()
+	r.Use(chimw.RequestID)
+	r.Use(chimw.RealIP)
+	r.Use(s.requestLogger)
+	r.Use(chimw.Recoverer)
+
+	r.Get("/healthz", s.handleHealthz)
+	r.Get("/api/v1/me", s.authMiddleware(s.handleMe))
+
+	// Cluster routes — wired in step 4. Kept as stubs for now.
+	r.Route("/api/v1/clusters", func(r chi.Router) {
+		r.Get("/", s.authMiddleware(s.handleListClusters))
+		r.Route("/{id}", func(r chi.Router) {
+			r.Get("/pods", s.authMiddleware(s.handleListPods))
+		})
+	})
+
+	return r
+}
+
+// handleHealthz returns 200 if the process is alive. Phase 1
+// doesn't probe Postgres or Keycloak here; liveness probes only
+// need to confirm the HTTP server is up.
+func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":     "ok",
+		"started_at": s.healthzAt.UTC().Format(time.RFC3339),
+	})
+}
+
+// handleMe returns the validated JWT claims for the current token.
+// Useful for the TUI to confirm login state.
+func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
+	claims, ok := claimsFrom(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "no claims")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"sub":                claims.Subject,
+		"email":              claims.Email,
+		"name":               claims.Name,
+		"preferred_username": claims.Username,
+		"aud":                claims.Audience,
+	})
+}
+
+// handleListClusters returns the user's registered clusters.
+func (s *Server) handleListClusters(w http.ResponseWriter, r *http.Request) {
+	claims, _ := claimsFrom(r)
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "no claims")
+		return
+	}
+	clusters, err := s.store.ListClusters(r.Context(), claims.Subject)
+	if err != nil {
+		s.log.Error().Err(err).Msg("list clusters")
+		writeError(w, http.StatusInternalServerError, "list clusters failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"clusters": clusters})
+}
+
+// handleListPods is the Phase 1 end-to-end flow:
+//
+//  1. Look up the cluster row (rejects cross-tenant access).
+//  2. Call the MCP k8s server's list_pods tool, passing the user's
+//     kubeconfig path in a header so the MCP server can construct
+//     a Kubernetes API client.
+//  3. Return the tool result as JSON.
+func (s *Server) handleListPods(w http.ResponseWriter, r *http.Request) {
+	claims, _ := claimsFrom(r)
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "no claims")
+		return
+	}
+	clusterID := chi.URLParam(r, "id")
+	if clusterID == "" {
+		writeError(w, http.StatusBadRequest, "cluster id required")
+		return
+	}
+	cluster, err := s.store.GetCluster(r.Context(), claims.Subject, clusterID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "cluster not found")
+			return
+		}
+		s.log.Error().Err(err).Str("cluster_id", clusterID).Msg("get cluster")
+		writeError(w, http.StatusInternalServerError, "cluster lookup failed")
+		return
+	}
+
+	// Best-effort upsert of the user so the foreign key stays satisfied
+	// even when /me hasn't been called yet.
+	_ = s.store.EnsureUser(r.Context(), store.User{
+		ID:       claims.Subject,
+		Username: firstNonEmpty(claims.Username, claims.Email, claims.Subject),
+		Email:    strPtr(claims.Email),
+	})
+
+	namespace := r.URL.Query().Get("namespace")
+	labelSelector := r.URL.Query().Get("label-selector")
+
+	args := map[string]any{
+		"cluster_id": cluster.ID,
+	}
+	if namespace != "" {
+		args["namespace"] = namespace
+	} else {
+		args["namespace"] = "default"
+	}
+	if labelSelector != "" {
+		args["label_selector"] = labelSelector
+	}
+
+	headers := http.Header{}
+	headers.Set("X-Strata-Kubeconfig", cluster.KubeconfigPath)
+	headers.Set("X-Strata-User", claims.Subject)
+
+	result, err := s.mcp.CallToolWithHeaders(r.Context(), "list_pods", args, headers)
+	if err != nil {
+		s.log.Error().Err(err).Str("cluster_id", clusterID).Msg("mcp call_tool")
+		writeError(w, http.StatusBadGateway, fmt.Sprintf("mcp call failed: %v", err))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(result)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func strPtr(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+// requestLogger is a chi middleware that logs each request.
+func (s *Server) requestLogger(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		ww := chimw.NewWrapResponseWriter(w, r.ProtoMajor)
+		next.ServeHTTP(ww, r)
+		s.log.Info().
+			Str("method", r.Method).
+			Str("path", r.URL.Path).
+			Int("status", ww.Status()).
+			Dur("dur", time.Since(start)).
+			Msg("request")
+	})
+}
+
+// authMiddleware validates the Authorization: Bearer <jwt> header
+// against Keycloak. The dev-only BOOTSTRAP_ADMIN_TOKEN bypasses JWT
+// validation so smoke tests work before Keycloak is reachable.
+func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		raw, err := extractBearer(r.Header.Get("Authorization"))
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, err.Error())
+			return
+		}
+		if s.cfg.BootstrapAdminToken != "" && raw == s.cfg.BootstrapAdminToken {
+			// Dev shortcut: synthesize claims so handlers can still
+			// pull a user identity. The "subject" is the literal
+			// string "bootstrap-admin".
+			ctx := r.Context()
+			ctx = withClaims(ctx, &jwks.Claims{
+				Subject:  "bootstrap-admin",
+				Username: "bootstrap-admin",
+				Audience: []string{s.cfg.JWTAudience},
+			})
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
+		}
+		claims, err := s.jwks.Validate(r.Context(), raw)
+		if err != nil {
+			s.log.Warn().Err(err).Msg("jwt validation failed")
+			writeError(w, http.StatusUnauthorized, "invalid token")
+			return
+		}
+		ctx := withClaims(r.Context(), claims)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	}
+}
+
+func extractBearer(header string) (string, error) {
+	if header == "" {
+		return "", errors.New("missing Authorization header")
+	}
+	const prefix = "Bearer "
+	if !strings.HasPrefix(header, prefix) {
+		return "", errors.New("malformed Authorization header")
+	}
+	tok := strings.TrimSpace(header[len(prefix):])
+	if tok == "" {
+		return "", errors.New("empty bearer token")
+	}
+	return tok, nil
+}
+
+// claimsFrom is a typed accessor for the request's validated claims.
+func claimsFrom(r *http.Request) (*jwks.Claims, bool) {
+	c, ok := r.Context().Value(claimsKey{}).(*jwks.Claims)
+	return c, ok
+}
+
+type claimsKey struct{}
+
+// withClaims stores the validated claims on the request context.
+func withClaims(ctx context.Context, c *jwks.Claims) context.Context {
+	return context.WithValue(ctx, claimsKey{}, c)
+}
+
+// writeJSON marshals v as JSON to w with the given status code.
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+// writeError writes a JSON error envelope. The optional details param
+// is included under the "details" key.
+func writeError(w http.ResponseWriter, status int, msg string, details ...any) {
+	body := map[string]any{"error": msg}
+	if len(details) > 0 {
+		body["details"] = details[0]
+	}
+	writeJSON(w, status, body)
+}

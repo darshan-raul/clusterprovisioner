@@ -48,5 +48,9 @@ Thumbs.db
 # Logs
 **/*.log
 
+# Local dev / test artifacts
+.kind-kubeconfig
+*.kind-kubeconfig
+
 # Personal scratchpad (canonical versions live in docs/)
 /notes/

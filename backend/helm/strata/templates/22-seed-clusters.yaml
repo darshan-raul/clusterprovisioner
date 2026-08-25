@@ -1,0 +1,151 @@
+---
+# Phase 1 dev: insert one row into the clusters table so the TUI
+# has something to point at. The user_id is the Keycloak subject
+# for the `dev` test user; we look it up via the Keycloak admin
+# REST API at Job startup. Without this lookup, the cluster would
+# be owned by a placeholder user and the real OIDC e2e (which uses
+# a different sub per realm import) couldn't see it.
+#
+# The Job retries until Postgres + Keycloak are reachable (Keycloak
+# may take a minute to finish the realm import). When it succeeds,
+# it self-deletes via the helm.sh/hook-delete-policy annotation.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: strata-seed-clusters
+  namespace: strata
+  labels:
+    app.kubernetes.io/component: seed-clusters
+    app.kubernetes.io/part-of: strata
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "2"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 30
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: seed-clusters
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: seed
+          image: postgres:16-alpine
+          env:
+            - name: PGPASSWORD
+              value: strata-dev-password
+            - name: PGHOST
+              value: postgres.strata.svc.cluster.local
+            - name: PGPORT
+              value: "5432"
+            - name: PGUSER
+              value: strata
+            - name: PGDATABASE
+              value: strata
+            # Keycloak admin REST API endpoint. The realm
+            # bootstraps in 20-keycloak.yaml; admin credentials
+            # are pinned in values.yaml (dev only).
+            - name: KEYCLOAK_URL
+              value: {{ .Values.keycloak.frontendUrl | quote }}
+            - name: KEYCLOAK_REALM
+              value: {{ .Values.keycloak.realm.name | quote }}
+            - name: KEYCLOAK_ADMIN_USER
+              value: {{ .Values.keycloak.auth.adminUser | quote }}
+            - name: KEYCLOAK_ADMIN_PASSWORD
+              value: {{ .Values.keycloak.auth.adminPassword | quote }}
+            # The username of the dev user to attach the seed
+            # cluster to. Defaults to "dev" (seeded in realm.json).
+            - name: SEED_USERNAME
+              value: "dev"
+            - name: SEED_CLUSTER_ID
+              value: "cl-mock-01"
+            - name: SEED_CLUSTER_NAME
+              value: "mock-cluster"
+            - name: SEED_CLUSTER_CONTEXT
+              value: "mock-cluster"
+            - name: SEED_CLUSTER_KUBECONFIG_PATH
+              value: "/etc/strata/kubeconfigs/cl-mock-01"
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+
+              apk add --no-cache curl
+
+              # ── Wait for Postgres ─────────────────────────────────────
+              until pg_isready -h "$PGHOST" -p "$PGPORT" -U "$PGUSER"; do
+                echo "waiting for postgres..."
+                sleep 5
+              done
+
+              # ── Wait for Keycloak to finish the realm import ──────────
+              REALM_URL="${KEYCLOAK_URL}/realms/${KEYCLOAK_REALM}"
+              until curl -sf "${REALM_URL}" >/dev/null 2>&1; do
+                echo "waiting for keycloak realm ${KEYCLOAK_REALM}..."
+                sleep 5
+              done
+
+              # ── Admin token (Keycloak master realm) ──────────────────
+              ADMIN_TOKEN=$(curl -sf -X POST \
+                -H "Content-Type: application/x-www-form-urlencoded" \
+                -d "grant_type=password" \
+                -d "client_id=admin-cli" \
+                -d "username=${KEYCLOAK_ADMIN_USER}" \
+                -d "password=${KEYCLOAK_ADMIN_PASSWORD}" \
+                "${KEYCLOAK_URL}/realms/master/protocol/openid-connect/token" \
+                | sed -E 's/.*"access_token":"([^"]+)".*/\1/')
+              [ -n "$ADMIN_TOKEN" ] || { echo "failed to get admin token"; exit 1; }
+
+              # ── Resolve ${SEED_USERNAME}'s Keycloak sub ─────────────
+              # The subject is a random UUID assigned by Keycloak on
+              # realm import. We can't hardcode it, so we look it up.
+              USER_JSON=$(curl -sf -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+                "${KEYCLOAK_URL}/admin/realms/${KEYCLOAK_REALM}/users?username=${SEED_USERNAME}&exact=true")
+              SUB=$(echo "$USER_JSON" | sed -n 's/.*"id" *: *"\([^"]\+\)".*/\1/p' | head -n1)
+              if [ -z "$SUB" ]; then
+                echo "could not resolve sub for user ${SEED_USERNAME} (response: ${USER_JSON})"
+                exit 1
+              fi
+              EMAIL=$(echo "$USER_JSON" | sed -n 's/.*"email" *: *"\([^"]\+\)".*/\1/p' | head -n1)
+              echo "resolved ${SEED_USERNAME} -> sub=${SUB} email=${EMAIL}"
+
+              # ── Insert the seed cluster owned by that sub ───────────
+              psql -v ON_ERROR_STOP=1 <<SQL
+              CREATE TABLE IF NOT EXISTS users (
+                  id           TEXT PRIMARY KEY,
+                  username     TEXT NOT NULL UNIQUE,
+                  email        TEXT,
+                  created_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+              );
+
+              CREATE TABLE IF NOT EXISTS clusters (
+                  id          TEXT PRIMARY KEY,
+                  user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                  name        TEXT NOT NULL,
+                  context     TEXT NOT NULL,
+                  created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  UNIQUE (user_id, name)
+              );
+
+              CREATE INDEX IF NOT EXISTS idx_clusters_user ON clusters (user_id);
+
+              CREATE TABLE IF NOT EXISTS cluster_creds (
+                  cluster_id      TEXT PRIMARY KEY REFERENCES clusters(id) ON DELETE CASCADE,
+                  kubeconfig_path TEXT NOT NULL
+              );
+
+              INSERT INTO users (id, username, email)
+              VALUES ('${SUB}', '${SEED_USERNAME}', '${EMAIL}')
+              ON CONFLICT (id) DO NOTHING;
+
+              INSERT INTO clusters (id, user_id, name, context)
+              VALUES ('${SEED_CLUSTER_ID}', '${SUB}', '${SEED_CLUSTER_NAME}', '${SEED_CLUSTER_CONTEXT}')
+              ON CONFLICT (user_id, name) DO NOTHING;
+
+              INSERT INTO cluster_creds (cluster_id, kubeconfig_path)
+              VALUES ('${SEED_CLUSTER_ID}', '${SEED_CLUSTER_KUBECONFIG_PATH}')
+              ON CONFLICT (cluster_id) DO NOTHING;
+              SQL
+              echo "seed complete"
