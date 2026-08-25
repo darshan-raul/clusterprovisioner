@@ -53,6 +53,28 @@ mcp-k8s-test: ## run pytest suite for MCP k8s server
 mcp-k8s-lint: ## ruff lint the MCP k8s server
 	cd backend/mcp-servers/k8s && uv sync --all-extras && uv run --all-extras ruff check strata_mcp_k8s tests
 
+# ── Web (Next.js) ─────────────────────────────────────────────────
+
+.PHONY: web-dev
+web-dev: ## run Next.js web dev server
+	cd web && pnpm dev
+
+.PHONY: web-test
+web-test: ## run web unit tests (vitest)
+	cd web && pnpm test
+
+.PHONY: web-lint
+web-lint: ## lint and typecheck web app
+	cd web && pnpm lint && pnpm typecheck
+
+.PHONY: web-build
+web-build: ## build Next.js standalone bundle
+	cd web && pnpm build
+
+.PHONY: web-image
+web-image: ## build the Next.js web Docker image
+	docker build -t strata-web:dev -f web/Dockerfile web
+
 # ── Local kind cluster ─────────────────────────────────────────────
 
 .PHONY: kind-up
@@ -69,9 +91,10 @@ platform-deps: ## install Envoy Gateway into the running kind cluster
 	./scripts/install-platform-deps.sh
 
 .PHONY: backend-up
-backend-up: orchestrator-image mcp-k8s-image ## build images, load into kind, helm install Strata
+backend-up: orchestrator-image mcp-k8s-image web-image ## build images, load into kind, helm install Strata
 	kind load docker-image strata-orchestrator:dev --name strata-dev
 	kind load docker-image strata-mcp-k8s:dev --name strata-dev
+	kind load docker-image strata-web:dev --name strata-dev
 	helm upgrade --install strata backend/helm/strata \
 	    --namespace strata --create-namespace \
 	    -f backend/helm/strata/values-kind.yaml
@@ -85,7 +108,7 @@ backend-logs: ## tail logs across all strata pods
 	kubectl logs -l app.kubernetes.io/part-of=strata -n strata --tail=100 -f
 
 .PHONY: e2e
-e2e: ## full Phase 1 end-to-end smoke (kind + helm + REST API check)
+e2e: ## full Phase 1/2 end-to-end smoke (kind + helm + web + REST API check)
 	./scripts/e2e.sh
 
 # ── Reset ──────────────────────────────────────────────────────────
@@ -97,4 +120,5 @@ reset: ## nuke caches, .venv, build artifacts
 	@find . -type d -name .ruff_cache -exec rm -rf {} + 2>/dev/null || true
 	@rm -rf tui/.venv tui/uv.lock 2>/dev/null || true
 	@rm -rf backend/mcp-servers/k8s/.venv backend/mcp-servers/k8s/uv.lock 2>/dev/null || true
+	@rm -rf web/node_modules web/.next 2>/dev/null || true
 	@echo "reset complete"

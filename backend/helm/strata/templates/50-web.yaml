@@ -1,1 +1,74 @@
-{{- /* web Phase 1 placeholder. The Next.js app lands in step 9. */}}
+{{- if .Values.web.enabled }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: web
+  namespace: strata
+  labels:
+    app.kubernetes.io/component: web
+    app.kubernetes.io/part-of: strata
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: strata
+  labels:
+    app.kubernetes.io/component: web
+    app.kubernetes.io/part-of: strata
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/component: web
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: strata
+  labels:
+    app.kubernetes.io/component: web
+    app.kubernetes.io/part-of: strata
+spec:
+  replicas: {{ .Values.web.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: web
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: web
+        app.kubernetes.io/part-of: strata
+    spec:
+      serviceAccountName: web
+      containers:
+        - name: web
+          image: "{{ .Values.web.image.repository }}:{{ .Values.web.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            {{- range $k, $v := .Values.web.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 15
+{{- end }}

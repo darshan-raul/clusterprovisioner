@@ -79,6 +79,27 @@ keycloak:
 qdrant:
   enabled: false  # Phase 6
 
+# ── Web (Next.js Dashboard) ──────────────────────────────────────────
+web:
+  enabled: true
+  replicas: 1
+  image:
+    repository: strata-web
+    tag: dev
+  env:
+    NODE_ENV: "production"
+    KEYCLOAK_URL: "http://keycloak:8080"
+    KEYCLOAK_INTERNAL_URL: "http://keycloak:8080"
+    KEYCLOAK_PUBLIC_URL: "http://localhost:8081"
+    KEYCLOAK_REALM: "strata-dev"
+    KEYCLOAK_CLIENT_ID: "strata-web"
+    KEYCLOAK_CLIENT_SECRET: "strata-web-dev-secret-do-not-use-in-prod"
+    ORCHESTRATOR_URL: "http://orchestrator:8080"
+    NEXT_PUBLIC_KEYCLOAK_URL: "http://localhost:8081"
+    NEXT_PUBLIC_ORCHESTRATOR_URL: "http://localhost:8080"
+    SESSION_SECRET: "strata-dev-secret-key-must-be-at-least-32-chars-long"
+    APP_URL: "http://localhost:3000"
+
 # ── Service ports (used by the kind port mapping + port-forward) ───────────
 ports:
   keycloak: 8080

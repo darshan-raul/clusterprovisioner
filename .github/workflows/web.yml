@@ -7,11 +7,43 @@ on:
     paths:
       - 'web/**'
       - '.github/workflows/web.yml'
+  pull_request:
+    paths:
+      - 'web/**'
+      - '.github/workflows/web.yml'
 
 jobs:
-  placeholder:
+  test-and-build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Web lands in Phase 2 (placeholder CI)
-        run: echo "web CI lands in Phase 2"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.24.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'pnpm'
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Install dependencies
+        working-directory: web
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Lint
+        working-directory: web
+        run: pnpm lint
+
+      - name: Typecheck
+        working-directory: web
+        run: pnpm typecheck
+
+      - name: Unit tests
+        working-directory: web
+        run: pnpm test
+
+      - name: Build standalone bundle
+        working-directory: web
+        run: pnpm build

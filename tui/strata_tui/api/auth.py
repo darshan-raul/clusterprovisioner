@@ -97,7 +97,7 @@ class DeviceCodeFlow:
         """POST to Keycloak's device endpoint. Returns the codes
         the user needs to enter on the verification page.
         """
-        body = {"client_id": self._client_id, "scope": "openid"}
+        body = {"client_id": self._client_id, "scope": "openid strata-profile email"}
         resp = await self._http.post(
             self._device_url(),
             data=body,

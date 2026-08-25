@@ -13,6 +13,7 @@
 **/.turbo/
 **/dist/
 **/.pnpm-store/
+**/*.tsbuildinfo
 
 # Terraform
 **/.terraform/

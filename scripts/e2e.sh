@@ -35,13 +35,15 @@ kind get kubeconfig --name "$KIND_CLUSTER" > "$KUBECONFIG"
 step "Installing platform deps (Envoy Gateway)"
 "$REPO_ROOT/scripts/install-platform-deps.sh"
 
-step "Building orchestrator + MCP k8s images"
+step "Building orchestrator + MCP k8s + Web images"
 docker build -t strata-orchestrator:dev -f "$REPO_ROOT/backend/services/orchestrator/Dockerfile" "$REPO_ROOT"
 docker build -t strata-mcp-k8s:dev -f "$REPO_ROOT/backend/mcp-servers/k8s/Dockerfile" "$REPO_ROOT/backend/mcp-servers/k8s"
+docker build -t strata-web:dev -f "$REPO_ROOT/web/Dockerfile" "$REPO_ROOT/web"
 
 step "Loading images into kind"
 kind load docker-image strata-orchestrator:dev --name "$KIND_CLUSTER"
 kind load docker-image strata-mcp-k8s:dev --name "$KIND_CLUSTER"
+kind load docker-image strata-web:dev --name "$KIND_CLUSTER"
 
 step "Installing Strata chart"
 helm upgrade --install strata "$REPO_ROOT/backend/helm/strata" \
@@ -52,15 +54,18 @@ step "Waiting for pods to become ready"
 kubectl wait --for=condition=ready pod -l app.kubernetes.io/component=keycloak -n "$NAMESPACE" --timeout=300s
 kubectl wait --for=condition=ready pod -l app.kubernetes.io/component=orchestrator -n "$NAMESPACE" --timeout=120s
 kubectl wait --for=condition=ready pod -l app.kubernetes.io/component=mcp-k8s -n "$NAMESPACE" --timeout=120s
+kubectl wait --for=condition=ready pod -l app.kubernetes.io/component=web -n "$NAMESPACE" --timeout=120s
 kubectl wait --for=condition=ready pod -l app.kubernetes.io/component=postgres -n "$NAMESPACE" --timeout=120s
 
-step "Port-forwarding orchestrator + Keycloak"
+step "Port-forwarding orchestrator + Keycloak + Web"
 kubectl port-forward svc/orchestrator 8080:8080 -n "$NAMESPACE" >/tmp/orch-portforward.log 2>&1 &
 ORCH_PF=$!
 kubectl port-forward svc/keycloak 8081:8080 -n "$NAMESPACE" >/tmp/kc-portforward.log 2>&1 &
 KC_PF=$!
+kubectl port-forward svc/web 3000:3000 -n "$NAMESPACE" >/tmp/web-portforward.log 2>&1 &
+WEB_PF=$!
 cleanup_pf() {
-    kill "$ORCH_PF" "$KC_PF" 2>/dev/null || true
+    kill "$ORCH_PF" "$KC_PF" "$WEB_PF" 2>/dev/null || true
 }
 trap "cleanup_pf; cleanup" EXIT
 # Give port-forward listeners a moment to bind.
@@ -70,6 +75,21 @@ step "Testing orchestrator /healthz"
 HEALTH=$(curl -sf http://localhost:8080/healthz)
 echo "$HEALTH"
 echo "$HEALTH" | grep -q '"status":"ok"' || fail "orchestrator /healthz did not return ok"
+
+step "Testing Web landing page /"
+WEB_HTML=$(curl -sf http://localhost:3000/)
+echo "$WEB_HTML" | head -n 10
+echo "$WEB_HTML" | grep -q "STRATA" || fail "web landing page did not contain STRATA"
+
+step "Testing Web /api/auth/login PKCE redirect to Keycloak"
+LOGIN_REDIRECT=$(curl -sI http://localhost:3000/api/auth/login)
+echo "$LOGIN_REDIRECT" | head -n 5
+echo "$LOGIN_REDIRECT" | grep -q "location: http://localhost:8081/realms/strata-dev/protocol/openid-connect/auth" || fail "web login did not redirect to Keycloak auth"
+
+step "Testing Web /dashboard unauthenticated redirect to /login"
+DASH_REDIRECT=$(curl -sI http://localhost:3000/dashboard)
+echo "$DASH_REDIRECT" | head -n 5
+echo "$DASH_REDIRECT" | grep -q "location: /login" || fail "web dashboard did not redirect unauthenticated user to /login"
 
 step "Testing Keycloak /realms/strata-dev is up"
 KC_REALM=$(curl -sf http://localhost:8081/realms/strata-dev)

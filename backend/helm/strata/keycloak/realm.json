@@ -1,7 +1,7 @@
 {
   "realm": "strata-dev",
   "enabled": true,
-  "registrationAllowed": false,
+  "registrationAllowed": true,
   "loginWithEmailAllowed": true,
   "duplicateEmailsAllowed": false,
   "resetPasswordAllowed": false,
@@ -84,14 +84,42 @@
       "secret": "strata-web-dev-secret-do-not-use-in-prod",
       "redirectUris": [
         "http://localhost:3000/*",
-        "http://localhost:8443/*"
+        "http://localhost:8443/*",
+        "http://web.strata.local/*"
       ],
       "webOrigins": [
         "http://localhost:3000",
-        "http://localhost:8443"
+        "http://localhost:8443",
+        "http://web.strata.local"
       ],
       "standardFlowEnabled": true,
-      "directAccessGrantsEnabled": false
+      "directAccessGrantsEnabled": false,
+      "protocolMappers": [
+        {
+          "name": "sub-mapper",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-property-mapper",
+          "config": {
+            "user.attribute": "id",
+            "claim.name": "sub",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "true"
+          }
+        },
+        {
+          "name": "username-mapper",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-property-mapper",
+          "config": {
+            "user.attribute": "username",
+            "claim.name": "preferred_username",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "true"
+          }
+        }
+      ]
     }
   ],
   "clientScopes": [
