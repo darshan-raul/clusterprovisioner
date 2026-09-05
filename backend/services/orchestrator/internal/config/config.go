@@ -55,6 +55,9 @@ type Config struct {
 	// EncryptionSecret is used to derive the AES-256-GCM encryption key
 	// for encrypting stored cluster kubeconfigs.
 	EncryptionSecret string
+
+	// RetrieverURL is the base URL of the retriever service.
+	RetrieverURL string
 }
 
 // Load reads the orchestrator's config from the environment.
@@ -76,6 +79,7 @@ func Load() (Config, error) {
 		MCPK8sURL:           getEnv("MCP_K8S_URL", "http://mcp-k8s:8000/mcp"),
 		BootstrapAdminToken: getEnv("BOOTSTRAP_ADMIN_TOKEN", ""),
 		EncryptionSecret:    getEnv("ENCRYPTION_SECRET", "strata-dev-insecure-master-key-change-me"),
+		RetrieverURL:        getEnv("RETRIEVER_URL", "http://localhost:8082"),
 	}
 	if cfg.DatabaseURL == "" {
 		return Config{}, fmt.Errorf("DATABASE_URL is required")

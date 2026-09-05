@@ -12,11 +12,13 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -85,6 +87,7 @@ func (s *Server) Router() http.Handler {
 	r.Get("/healthz", s.handleHealthz)
 	r.Get("/api/v1/me", s.authMiddleware(s.handleMe))
 	r.Get("/api/v1/history", s.authMiddleware(s.handleListHistory))
+	r.Post("/api/v1/retrieve", s.authMiddleware(s.handleRetrieve))
 
 	// Cluster routes
 	r.Route("/api/v1/clusters", func(r chi.Router) {
@@ -362,6 +365,48 @@ func (s *Server) handleListClusterHistory(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"history": items})
+}
+
+// handleRetrieve proxies RAG queries to the retriever service, scoping by user identity.
+func (s *Server) handleRetrieve(w http.ResponseWriter, r *http.Request) {
+	claims, _ := claimsFrom(r)
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "no claims")
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "failed to read request body")
+		return
+	}
+
+	retrieverURL := s.cfg.RetrieverURL
+	if retrieverURL == "" {
+		retrieverURL = "http://localhost:8082"
+	}
+
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, strings.TrimRight(retrieverURL, "/")+"/retrieve", bytes.NewReader(body))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to construct retriever request")
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Strata-User", claims.Subject)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		s.log.Error().Err(err).Msg("call retriever failed")
+		writeError(w, http.StatusBadGateway, fmt.Sprintf("retriever service unavailable: %v", err))
+		return
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	w.Write(respBody)
 }
 
 func attachClusterCreds(cluster *store.Cluster, args map[string]any, headers http.Header) {

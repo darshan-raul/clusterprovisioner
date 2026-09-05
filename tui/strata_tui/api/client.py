@@ -223,6 +223,30 @@ class StrataClient:
     async def healthz(self) -> dict[str, Any]:
         return await self._get("/healthz")
 
+    async def retrieve(
+        self,
+        query: str,
+        *,
+        collection: str = "clusters",
+        top_k: int = 5,
+        filter: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Retrieve relevant RAG context chunks from the backend."""
+        payload: dict[str, Any] = {
+            "query": query,
+            "collection": collection,
+            "top_k": top_k,
+        }
+        if filter:
+            payload["filter"] = filter
+        resp = await self._http.post(
+            f"{self._base}/api/v1/retrieve",
+            headers=self._headers(),
+            json=payload,
+        )
+        data = _parse(resp)
+        return data.get("chunks", [])
+
     async def aclose(self) -> None:
         if self._owns_client and self._http is not None:
             await self._http.aclose()

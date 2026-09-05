@@ -10,52 +10,54 @@
 
 ## Current phase
 
-**Phase 6 — RAG (per-user).** (queued)
+**Phase 7 — More MCP servers.** (queued)
 
-Phase 5 (Web dashboard) is complete. The read-only web dashboard features a cluster manager, per-cluster Kubernetes resource browser (`/dashboard/clusters/[id]`), pod inspection drawer with TUI command snippets, live workload metrics, namespace & status filters, and an end-to-end action audit trail (`/api/v1/history`) capturing mutations across TUI, agent, and web surfaces.
-
----
-
-## What's done in Phase 5
-
-- [x] **Audit Trail Schema & Store Layer (`backend/services/orchestrator/internal/store`):**
-  - Added `action_history` table in `0001_init.sql` with foreign keys referencing `users(id)` and `clusters(id)` with `ON DELETE CASCADE`, indexed on `(user_id, created_at DESC)` and `(cluster_id, created_at DESC)`.
-  - Implemented `store.ActionHistory` model and `RecordAction` / `ListHistory` store methods with limit clamping.
-  - Comprehensive unit tests in `store_test.go` verifying action insertion, filtering by user/cluster, and cascade deletion.
-- [x] **Orchestrator Audit Logging & History Endpoints (`backend/services/orchestrator/internal/api`):**
-  - Added `GET /api/v1/history` for user audit trail and `GET /api/v1/clusters/{id}/history` for cluster-specific activity.
-  - Wired `recordAction` helper into all mutation and lifecycle handlers (`handleCreateCluster`, `handleDeleteCluster`, `handleDeletePod`, `handleApplyManifest`, `handleExecCommand`) tracking `action_type`, `target`, `status` (`success`/`failed`), `details`, and `client_type` (`tui`, `tui_agent`, `web`).
-  - Added fake store history methods and unit tests in `fakes_test.go` and `clusters_test.go`.
-- [x] **Next.js API Routes & Data Layer (`web/lib/orchestrator.ts`, `web/app/api`):**
-  - Added `Pod` and `ActionHistoryItem` TypeScript interfaces, `fetchCluster`, `fetchPods`, and `fetchHistory`.
-  - Created Next.js Route Handlers:
-    - `web/app/api/clusters/[id]/pods/route.ts` (query parameters for `namespace`, `label_selector`).
-    - `web/app/api/clusters/[id]/history/route.ts` (query parameter for `limit`).
-    - `web/app/api/history/route.ts` (query parameters for `cluster_id`, `limit`).
-  - Vitest test coverage in `web/tests/clusters.test.ts` (11 tests in suite, 100% passing).
-- [x] **Next.js Resource Browser & Audit UI (`web/app/dashboard`):**
-  - Built `ClusterDetailClient` and server component at `/dashboard/clusters/[id]`:
-    - Summary banner with cluster context, ready badge, registration date, and live refresh button.
-    - Read-only safety invariant notice emphasizing TUI as sole mutating surface.
-    - Quick metrics bar (Total, Running, Pending, Failed/Issues).
-    - Instant search filter, namespace filter, and status filter dropdown.
-    - Pods table with color-coded status badges and container readiness.
-    - Pod inspection drawer modal with metadata and copyable TUI command examples.
-    - Tabbed view switching between Pods and Cluster Audit History.
-  - Built `HistoryFeed` component in `web/app/dashboard/history-feed.tsx` showing status, action pills, target, client badges (`[TUI]`, `[AGENT]`, `[WEB]`), and timestamps.
-  - Enhanced `ClusterManager` with "Browse" links and integrated `HistoryFeed` on the main dashboard (`/dashboard`).
-  - Verified production bundle (`next build`) and linting (`next lint`).
+Phase 6 (RAG per-user) is complete. The multi-tenant RAG architecture features:
+1. `retriever` Go service with strict per-user collection isolation (`user_{user_id}_{collection}`), Qdrant REST integration, in-memory cosine fallback, and OpenAI/LiteLLM embedding integration.
+2. `rag-indexer` Go service with markdown runbook chunking and cluster workload/history state synchronization (daemon and `--once` modes).
+3. Orchestrator `POST /api/v1/retrieve` proxy injecting tenant identity.
+4. TUI `StrataClient.retrieve`, LangGraph `retrieve_docs` tool, and `should_retrieve` routing logic.
 
 ---
 
-## What's next (Phase 6)
+## What's done in Phase 6
+
+- [x] **Authoritative RAG Architecture Reference (`docs/rag.md`):**
+  - Full design covering multi-tenant per-user collections, request flows, API contracts, Qdrant/Memory store abstractions, ingestion, and LangGraph integration.
+- [x] **Retriever Service (`backend/services/retriever/`):**
+  - `internal/embedder`: `Embedder` interface with `OpenAIEmbedder` (LiteLLM/OpenAI-compatible) and deterministic, unit-normalized `MockEmbedder`.
+  - `internal/vectorstore`: `Store` interface with `QdrantStore` (HTTP REST `/collections`, `/points/search`, `/points`) and thread-safe `MemoryStore` with cosine similarity and metadata filtering.
+  - `internal/api`: Chi router with `GET /healthz`, `POST /retrieve`, `POST /index`, and `DELETE /index/{collection}/*`.
+  - Enforced multi-tenant isolation via `UserScopedCollection(userID, collection)` (`user_{user_id}_{collection}`) and `user_id` payload attributes.
+  - Unit tests in `embedder_test.go`, `vectorstore_test.go`, and `server_test.go` (100% passing).
+- [x] **RAG Indexer Service (`backend/services/rag-indexer/`):**
+  - `internal/indexer/docs.go`: recursive markdown traversal and header-based chunking (`# `, `## `, `### `) with content hashing.
+  - `internal/indexer/indexer.go`: cluster summary, pod workload, and audit history chunking and ingestion into retriever.
+  - `cmd/rag-indexer`: supporting both continuous ticker daemon and single-shot execution (`--once`).
+  - Unit tests in `indexer_test.go` (100% passing).
+- [x] **Orchestrator Retrieval Gateway (`backend/services/orchestrator/`):**
+  - Added `RetrieverURL` to configuration with environment fallback.
+  - Added `POST /api/v1/retrieve` endpoint with JWT authentication and `X-Strata-User` header injection.
+  - Added unit test in `clusters_test.go` verifying proxying to mock retriever service.
+- [x] **Textual TUI & LangGraph Agent Integration (`tui/strata_tui/`):**
+  - Added `retrieve` method to `StrataClient` in `tui/strata_tui/api/client.py`.
+  - Added `retrieve_docs` tool in `tui/strata_tui/agent.py` supporting `clusters` and `docs` collections.
+  - Added `should_retrieve` heuristic function detecting diagnostic and informational intent.
+  - Updated `SYSTEM_PROMPT` to guide agent on retrieval usage.
+  - Unit tests in `test_api.py` and `test_agent.py` (45 tests in suite, 100% passing).
+- [x] **Workflow & CI (`Makefile`):**
+  - Updated `backend-test` and `backend-lint` to test and vet all 4 Go services (`shared`, `orchestrator`, `retriever`, `rag-indexer`).
+
+---
+
+## What's next (Phase 7)
 
 See [AGENTS.md §5](AGENTS.md#5-build-phases).
 
-- **Qdrant Vector Database:** Qdrant in backend cluster with per-user collections (`user_{user_id}`).
-- **RAG Indexer (`backend/services/rag-indexer/`):** Go service ingesting cluster state (pods, events, nodes) periodically into vector collections.
-- **Retriever Service (`backend/services/retriever/`):** Go service exposing `/retrieve` endpoint queried by the agent.
-- **LangGraph Retrieval Node:** Agent service incorporates `retrieve` node with conditional routing.
+- **ArgoCD FastMCP Server (`backend/mcp-servers/argocd/`):** Streamable-HTTP MCP server exposing tools: `list_apps`, `get_app`, `sync_app`, `get_app_logs`.
+- **AWS FastMCP Server (`backend/mcp-servers/aws/`):** Read-only tools for inspecting EKS clusters, node groups, and cloudwatch alerts.
+- **Helm FastMCP Server (`backend/mcp-servers/helm/`):** Tools for listing releases, inspecting values, and validating charts.
+- **Agent Tool Chaining:** Multi-server tool invocation demonstrating cross-system diagnostics.
 
 ---
 
@@ -95,3 +97,14 @@ See [AGENTS.md §5](AGENTS.md#5-build-phases).
 - Built read-only Kubernetes resource browser (`/dashboard/clusters/[id]`) with live pod metrics, search & namespace filters, status badges, and pod inspection drawer modal with copyable TUI commands.
 - Built `HistoryFeed` component and integrated into the main dashboard and cluster details view.
 - Verified all tiers: Go backend tests + lint, FastMCP k8s tests + lint, Next.js build + vitest + eslint, and Textual TUI tests + lint. Phase 5 closed.
+
+### Session 7 — Phase 6 Multi-Tenant RAG (Per-User Collections & LangGraph Tool)
+
+- Rewrote `docs/rag.md` as the authoritative multi-tenant RAG architecture and reference guide.
+- Built `retriever` Go service (`backend/services/retriever/`) with `OpenAIEmbedder` (LiteLLM/OpenAI-compatible) and deterministic `MockEmbedder`, Qdrant REST integration and in-memory cosine fallback, and Chi API (`/retrieve`, `/index`, `/delete`).
+- Enforced strict per-user collection isolation (`user_{user_id}_{collection}`) preventing cross-tenant vector retrieval.
+- Built `rag-indexer` Go service (`backend/services/rag-indexer/`) with markdown document chunking by headings and cluster workload/history state synchronization, supporting both ticker daemon and `--once` execution.
+- Added `POST /api/v1/retrieve` to Go orchestrator, proxying user requests to `retriever-service` with `X-Strata-User` injection.
+- Added `StrataClient.retrieve`, `retrieve_docs` tool, and `should_retrieve` routing helper to Textual TUI LangGraph agent.
+- Updated `Makefile` to include all 4 Go services in `backend-test` and `backend-lint`.
+- Verified all tiers (Backend, MCP, Web, TUI) with 100% test pass rate and clean linting. Phase 6 closed.

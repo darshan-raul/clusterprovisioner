@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -606,5 +607,59 @@ func TestListClusterHistory_FilterAndNotFound(t *testing.T) {
 	_ = json.NewDecoder(goodResp.Body).Decode(&histBody)
 	if len(histBody.History) != 0 {
 		t.Errorf("expected 0 items initially, got %d", len(histBody.History))
+	}
+}
+
+func TestRetrieve_ProxiesToRetrieverService(t *testing.T) {
+	retrieverHit := false
+	var receivedUser string
+	mockRetriever := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/retrieve" && r.Method == http.MethodPost {
+			retrieverHit = true
+			receivedUser = r.Header.Get("X-Strata-User")
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"chunks":[{"id":"doc-1","text":"test pod"}],"count":1}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer mockRetriever.Close()
+
+	ts, srv, priv := testServer(t)
+	srv.cfg.RetrieverURL = mockRetriever.URL
+	seedAlice(srv)
+
+	tok := mintToken(t, priv, "test-kid", "alice", "strata-tui", false)
+
+	// Unauthenticated should fail 401
+	unauthReq, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/retrieve", strings.NewReader(`{"query":"test"}`))
+	unauthResp, err := http.DefaultClient.Do(unauthReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unauthResp.Body.Close()
+	if unauthResp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("expected 401 for unauthenticated retrieve, got %d", unauthResp.StatusCode)
+	}
+
+	// Authenticated request
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/retrieve", strings.NewReader(`{"query":"test"}`))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from retrieve, got %d", resp.StatusCode)
+	}
+	if !retrieverHit {
+		t.Errorf("mock retriever was not called")
+	}
+	if receivedUser != "alice" {
+		t.Errorf("expected X-Strata-User alice, got %s", receivedUser)
 	}
 }

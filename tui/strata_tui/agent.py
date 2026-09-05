@@ -25,6 +25,7 @@ MUTATING_TOOLS = {"delete_pod", "apply_manifest", "exec_command"}
 SYSTEM_PROMPT = """\
 You are Strata, an AI co-pilot for managing Kubernetes clusters.
 You can query and mutate Kubernetes resources using your tools:
+- retrieve_docs (read-only): retrieve relevant cluster state, troubleshooting info, or operational runbooks
 - list_pods (read-only): inspect running pods
 - delete_pod (MUTATION): delete a pod
 - apply_manifest (MUTATION): apply YAML/JSON manifest
@@ -120,7 +121,44 @@ def build_strata_tools(
         except Exception as exc:  # noqa: BLE001
             return f"Error executing command: {exc}"
 
-    return [list_pods, delete_pod, apply_manifest, exec_command]
+    @tool
+    async def retrieve_docs(
+        query: str,
+        collection: str = "clusters",
+        top_k: int = 5,
+    ) -> str:
+        """Retrieve relevant background knowledge and context chunks from the Strata RAG engine.
+
+        Use this tool when you need:
+        - Diagnostic information or knowledge about clusters, pods, or recent audit events (collection='clusters')
+        - Operational guides, architecture explanations, or runbooks (collection='docs')
+
+        Args:
+            query: Specific question or keywords to search for.
+            collection: 'clusters' for live cluster/pod state, or 'docs' for platform runbooks and guides.
+            top_k: Number of relevant chunks to retrieve (default 5).
+        """
+        client = client_provider()
+        if not client:
+            return "Error: not logged in"
+        try:
+            chunks = await client.retrieve(query=query, collection=collection, top_k=top_k)
+            return json.dumps(chunks)
+        except Exception as exc:  # noqa: BLE001
+            return f"Error retrieving docs: {exc}"
+
+    return [retrieve_docs, list_pods, delete_pod, apply_manifest, exec_command]
+
+
+def should_retrieve(text: str) -> bool:
+    """Return True if the text suggests a retrieval or knowledge lookup."""
+    lower = text.lower()
+    question_words = {"how", "what", "why", "when", "where", "explain", "show", "describe", "troubleshoot"}
+    tokens = set(lower.split())
+    if tokens & question_words:
+        return True
+    keywords = ["docs", "runbook", "guide", "status", "upgrade", "architecture", "failing", "error", "crash"]
+    return any(k in lower for k in keywords)
 
 
 def create_agent_graph(llm: Any, tools: list[Any], checkpointer: Any | None = None):

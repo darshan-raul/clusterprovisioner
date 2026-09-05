@@ -111,3 +111,38 @@ async def test_mutating_tool_interrupts_and_denies(
     assert not state.next
     assert result["messages"][-1].content == "Action was cancelled."
     mock_client.delete_pod.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_retrieve_docs_tool_executes(mock_client: AsyncMock, agent_tools) -> None:
+    mock_client.retrieve.return_value = [
+        {"id": "doc-1", "text": "sample chunk", "score": 0.9}
+    ]
+    mock_llm = MagicMock()
+    mock_bound = MagicMock()
+    mock_llm.bind_tools.return_value = mock_bound
+
+    msg1 = AIMessage(
+        content="",
+        tool_calls=[{"name": "retrieve_docs", "args": {"query": "failing pods"}, "id": "c4"}],
+    )
+    msg2 = AIMessage(content="Here is the retrieved context.")
+    mock_bound.ainvoke = AsyncMock(side_effect=[msg1, msg2])
+
+    graph = create_agent_graph(mock_llm, agent_tools)
+    cfg = {"configurable": {"thread_id": "test-retrieve"}}
+
+    result = await graph.ainvoke({"messages": [HumanMessage(content="how do I fix failing pods?")]}, cfg)
+    assert result["messages"][-1].content == "Here is the retrieved context."
+    mock_client.retrieve.assert_called_once_with(query="failing pods", collection="clusters", top_k=5)
+
+
+def test_should_retrieve_keywords() -> None:
+    from strata_tui.agent import should_retrieve
+
+    assert should_retrieve("how do I upgrade EKS?") is True
+    assert should_retrieve("what are the failing pods?") is True
+    assert should_retrieve("show runbook for karpenter") is True
+    assert should_retrieve("explain architecture") is True
+    assert should_retrieve("delete pod nginx") is False
+    assert should_retrieve("hello strata") is False

@@ -26,14 +26,18 @@ tui-lint: ## ruff lint the TUI
 # ── Backend Go services ────────────────────────────────────────────
 
 .PHONY: backend-test
-backend-test: ## run Go tests for orchestrator + shared
+backend-test: ## run Go tests for shared, orchestrator, retriever, rag-indexer
 	cd backend/services/shared && go test ./...
 	cd backend/services/orchestrator && go test ./...
+	cd backend/services/retriever && go test ./...
+	cd backend/services/rag-indexer && go test ./...
 
 .PHONY: backend-lint
 backend-lint: ## vet + format backend Go modules
 	cd backend/services/shared && go vet ./... && gofmt -l .
 	cd backend/services/orchestrator && go vet ./... && gofmt -l .
+	cd backend/services/retriever && go vet ./... && gofmt -l .
+	cd backend/services/rag-indexer && go vet ./... && gofmt -l .
 
 .PHONY: orchestrator-image
 orchestrator-image: ## build the orchestrator Docker image

@@ -313,3 +313,25 @@ async def test_delete_cluster_success(mock_orchestrator: respx.MockRouter) -> No
     client = StrataClient(base_url="http://orch", token="AT")
     res = await client.delete_cluster("cl-new")
     assert res["status"] == "deleted"
+
+
+async def test_retrieve_success(mock_orchestrator: respx.MockRouter) -> None:
+    mock_orchestrator.post("/api/v1/retrieve").respond(
+        200,
+        json={
+            "chunks": [
+                {
+                    "id": "doc-1",
+                    "text": "nginx ingress pod running in prod",
+                    "score": 0.95,
+                    "metadata": {"kind": "pod"},
+                }
+            ],
+            "count": 1,
+        },
+    )
+    client = StrataClient(base_url="http://orch", token="AT")
+    chunks = await client.retrieve("failing pods", collection="clusters", top_k=3)
+    assert len(chunks) == 1
+    assert chunks[0]["id"] == "doc-1"
+    assert chunks[0]["score"] == 0.95
