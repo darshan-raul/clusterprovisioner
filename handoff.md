@@ -8,8 +8,6 @@
 
 ## Current phase
 
-## Current phase
-
 **Phase 7 — More MCP servers.** (queued)
 
 Phase 6 (RAG per-user) is complete. The multi-tenant RAG architecture features:
@@ -54,10 +52,12 @@ Phase 6 (RAG per-user) is complete. The multi-tenant RAG architecture features:
 
 See [AGENTS.md §5](AGENTS.md#5-build-phases).
 
-- **ArgoCD FastMCP Server (`backend/mcp-servers/argocd/`):** Streamable-HTTP MCP server exposing tools: `list_apps`, `get_app`, `sync_app`, `get_app_logs`.
-- **AWS FastMCP Server (`backend/mcp-servers/aws/`):** Read-only tools for inspecting EKS clusters, node groups, and cloudwatch alerts.
+- **Shared MCP Library (`backend/mcp-servers/shared/strata_mcp_common`):** Shared cryptography, credential handling, and error envelope formatting.
+- **ArgoCD FastMCP Server (`backend/mcp-servers/argocd/`):** Streamable-HTTP MCP server exposing tools: `list_apps`, `get_app`, `sync_app` [MUTATION], `get_app_logs`.
+- **AWS FastMCP Server (`backend/mcp-servers/aws/`):** Read-only tools for inspecting EKS clusters, node groups, and CloudWatch alerts.
 - **Helm FastMCP Server (`backend/mcp-servers/helm/`):** Tools for listing releases, inspecting values, and validating charts.
-- **Agent Tool Chaining:** Multi-server tool invocation demonstrating cross-system diagnostics.
+- **Orchestrator Routing & Agent Tool Chaining:** Orchestrator proxy routes, `StrataClient` bindings, LangGraph agent tool chaining, and `interrupt()` confirmation for mutations.
+- **MCP Documentation:** Comprehensive documentation in `docs/mcp.md` and `docs/strata/mcp-architecture.md`.
 
 ---
 
@@ -69,6 +69,20 @@ See [AGENTS.md §5](AGENTS.md#5-build-phases).
 ---
 
 ## Session log
+
+### Session 1 — Phase 0 & Phase 1 Reset, TUI Graduation, and Backend Skeleton
+
+- Nuked legacy v1 artifacts, graduated Textual TUI from sandbox to `tui/strata_tui/`.
+- Built Go orchestrator skeleton with Chi router, health checks, and JWKS validator.
+- Built FastMCP k8s server (`backend/mcp-servers/k8s/`) over streamable-HTTP with `list_pods` tool.
+- Established kind local development cluster, Envoy Gateway routing, and verified TUI `:get pods` flow. Phase 1 closed.
+
+### Session 2 & 3 — Phase 2 OIDC, Next.js Web Dashboard Auth, and TUI Device Flow
+
+- Deployed Keycloak as backend OIDC identity provider with realm, clients, and test users.
+- Built Next.js 15 web application with Keycloak OAuth2 Authorization Code + PKCE login/signup flow.
+- Added TUI OIDC Device Code flow (`strata login` / `:login`), storing session tokens locally.
+- Enforced JWT validation across Go orchestrator endpoints. Phase 2 closed.
 
 ### Session 4 — Phase 3 Mutation Tools, Confirmation Modal, and LangGraph Interrupts
 
