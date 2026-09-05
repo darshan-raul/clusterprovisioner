@@ -285,3 +285,31 @@ async def test_exec_command_success(mock_orchestrator: respx.MockRouter) -> None
     res = await client.exec_command("cl-001", "test-pod", "whoami")
     assert res["status"] == "completed"
     assert res["output"] == "root\n"
+
+
+async def test_create_cluster_success(mock_orchestrator: respx.MockRouter) -> None:
+    mock_orchestrator.post("/api/v1/clusters").respond(
+        201,
+        json={
+            "cluster": {
+                "id": "cl-new",
+                "name": "staging",
+                "context": "staging-ctx",
+            }
+        },
+    )
+    client = StrataClient(base_url="http://orch", token="AT")
+    cluster = await client.create_cluster("staging", "apiVersion: v1", context="staging-ctx")
+    assert cluster.id == "cl-new"
+    assert cluster.name == "staging"
+    assert cluster.context == "staging-ctx"
+
+
+async def test_delete_cluster_success(mock_orchestrator: respx.MockRouter) -> None:
+    mock_orchestrator.delete("/api/v1/clusters/cl-new").respond(
+        200,
+        json={"status": "deleted", "cluster_id": "cl-new"},
+    )
+    client = StrataClient(base_url="http://orch", token="AT")
+    res = await client.delete_cluster("cl-new")
+    assert res["status"] == "deleted"

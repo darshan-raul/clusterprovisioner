@@ -13,6 +13,7 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,9 +25,11 @@ import (
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/rs/zerolog"
+	"gopkg.in/yaml.v3"
 
 	"github.com/strata/orchestrator/internal/config"
 	"github.com/strata/orchestrator/internal/store"
+	"github.com/strata/shared/pkg/crypto"
 	"github.com/strata/shared/pkg/jwks"
 )
 
@@ -47,6 +50,8 @@ type ClusterStore interface {
 	EnsureUser(ctx context.Context, u store.User) error
 	ListClusters(ctx context.Context, userID string) ([]store.Cluster, error)
 	GetCluster(ctx context.Context, userID, clusterID string) (*store.Cluster, error)
+	CreateCluster(ctx context.Context, c store.Cluster, creds store.ClusterCreds) error
+	DeleteCluster(ctx context.Context, userID, clusterID string) error
 }
 
 // MCPCaller is the subset of the MCP client that the handlers use.
@@ -78,10 +83,12 @@ func (s *Server) Router() http.Handler {
 	r.Get("/healthz", s.handleHealthz)
 	r.Get("/api/v1/me", s.authMiddleware(s.handleMe))
 
-	// Cluster routes — wired in step 4. Kept as stubs for now.
+	// Cluster routes
 	r.Route("/api/v1/clusters", func(r chi.Router) {
 		r.Get("/", s.authMiddleware(s.handleListClusters))
+		r.Post("/", s.authMiddleware(s.handleCreateCluster))
 		r.Route("/{id}", func(r chi.Router) {
+			r.Delete("/", s.authMiddleware(s.handleDeleteCluster))
 			r.Get("/pods", s.authMiddleware(s.handleListPods))
 			r.Delete("/pods/{name}", s.authMiddleware(s.handleDeletePod))
 			r.Post("/apply", s.authMiddleware(s.handleApplyManifest))
@@ -135,11 +142,145 @@ func (s *Server) handleListClusters(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"clusters": clusters})
 }
 
+type CreateClusterRequest struct {
+	Name       string `json:"name"`
+	Context    string `json:"context,omitempty"`
+	Kubeconfig string `json:"kubeconfig"`
+}
+
+// handleCreateCluster registers a new Kubernetes cluster with encrypted credentials.
+func (s *Server) handleCreateCluster(w http.ResponseWriter, r *http.Request) {
+	claims, _ := claimsFrom(r)
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "no claims")
+		return
+	}
+
+	var req CreateClusterRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "malformed request body")
+		return
+	}
+
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "cluster name is required")
+		return
+	}
+	kubeconfigRaw := strings.TrimSpace(req.Kubeconfig)
+	if kubeconfigRaw == "" {
+		writeError(w, http.StatusBadRequest, "kubeconfig is required")
+		return
+	}
+
+	var parsedYAML struct {
+		CurrentContext string `yaml:"current-context"`
+		Contexts       []struct {
+			Name string `yaml:"name"`
+		} `yaml:"contexts"`
+	}
+	if err := yaml.Unmarshal([]byte(kubeconfigRaw), &parsedYAML); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid kubeconfig YAML: %v", err))
+		return
+	}
+
+	contextName := strings.TrimSpace(req.Context)
+	if contextName == "" {
+		if parsedYAML.CurrentContext != "" {
+			contextName = parsedYAML.CurrentContext
+		} else if len(parsedYAML.Contexts) > 0 && parsedYAML.Contexts[0].Name != "" {
+			contextName = parsedYAML.Contexts[0].Name
+		} else {
+			contextName = "default"
+		}
+	}
+
+	randBytes := make([]byte, 6)
+	if _, err := rand.Read(randBytes); err != nil {
+		s.log.Error().Err(err).Msg("generate cluster id rand")
+		writeError(w, http.StatusInternalServerError, "failed to generate cluster id")
+		return
+	}
+	clusterID := fmt.Sprintf("cl-%x", randBytes)
+
+	encSecret := s.cfg.EncryptionSecret
+	if encSecret == "" {
+		encSecret = "strata-dev-insecure-master-key-change-me"
+	}
+	key := crypto.DeriveKey(encSecret)
+	encryptedKubeconfig, err := crypto.Encrypt(key, []byte(kubeconfigRaw))
+	if err != nil {
+		s.log.Error().Err(err).Msg("encrypt kubeconfig")
+		writeError(w, http.StatusInternalServerError, "failed to encrypt cluster credentials")
+		return
+	}
+
+	_ = s.store.EnsureUser(r.Context(), store.User{
+		ID:       claims.Subject,
+		Username: firstNonEmpty(claims.Username, claims.Email, claims.Subject),
+		Email:    strPtr(claims.Email),
+	})
+
+	cluster := store.Cluster{
+		ID:        clusterID,
+		UserID:    claims.Subject,
+		Name:      name,
+		Context:   contextName,
+		CreatedAt: time.Now().UTC(),
+	}
+
+	if err := s.store.CreateCluster(r.Context(), cluster, store.ClusterCreds{
+		EncryptedKubeconfig: encryptedKubeconfig,
+	}); err != nil {
+		s.log.Error().Err(err).Msg("create cluster in store")
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to save cluster: %v", err))
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]any{"cluster": cluster})
+}
+
+// handleDeleteCluster deletes a user's cluster and associated credentials.
+func (s *Server) handleDeleteCluster(w http.ResponseWriter, r *http.Request) {
+	claims, _ := claimsFrom(r)
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "no claims")
+		return
+	}
+	clusterID := chi.URLParam(r, "id")
+	if clusterID == "" {
+		writeError(w, http.StatusBadRequest, "cluster id required")
+		return
+	}
+	err := s.store.DeleteCluster(r.Context(), claims.Subject, clusterID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "cluster not found")
+			return
+		}
+		s.log.Error().Err(err).Str("cluster_id", clusterID).Msg("delete cluster")
+		writeError(w, http.StatusInternalServerError, "delete cluster failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "cluster_id": clusterID})
+}
+
+func attachClusterCreds(cluster *store.Cluster, args map[string]any, headers http.Header) {
+	if cluster.EncryptedKubeconfig != "" {
+		args["kubeconfig_encrypted"] = cluster.EncryptedKubeconfig
+		headers.Set("X-Strata-Encrypted-Kubeconfig", cluster.EncryptedKubeconfig)
+	}
+	if cluster.KubeconfigPath != "" {
+		args["kubeconfig_path"] = cluster.KubeconfigPath
+		headers.Set("X-Strata-Kubeconfig", cluster.KubeconfigPath)
+	}
+}
+
 // handleListPods is the Phase 1 end-to-end flow:
 //
 //  1. Look up the cluster row (rejects cross-tenant access).
 //  2. Call the MCP k8s server's list_pods tool, passing the user's
-//     kubeconfig path in a header so the MCP server can construct
+//     kubeconfig in args/headers so the MCP server can construct
 //     a Kubernetes API client.
 //  3. Return the tool result as JSON.
 func (s *Server) handleListPods(w http.ResponseWriter, r *http.Request) {
@@ -188,8 +329,8 @@ func (s *Server) handleListPods(w http.ResponseWriter, r *http.Request) {
 	}
 
 	headers := http.Header{}
-	headers.Set("X-Strata-Kubeconfig", cluster.KubeconfigPath)
 	headers.Set("X-Strata-User", claims.Subject)
+	attachClusterCreds(cluster, args, headers)
 
 	result, err := s.mcp.CallToolWithHeaders(r.Context(), "list_pods", args, headers)
 	if err != nil {
@@ -242,8 +383,8 @@ func (s *Server) handleDeletePod(w http.ResponseWriter, r *http.Request) {
 	}
 
 	headers := http.Header{}
-	headers.Set("X-Strata-Kubeconfig", cluster.KubeconfigPath)
 	headers.Set("X-Strata-User", claims.Subject)
+	attachClusterCreds(cluster, args, headers)
 
 	result, err := s.mcp.CallToolWithHeaders(r.Context(), "delete_pod", args, headers)
 	if err != nil {
@@ -303,8 +444,8 @@ func (s *Server) handleApplyManifest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	headers := http.Header{}
-	headers.Set("X-Strata-Kubeconfig", cluster.KubeconfigPath)
 	headers.Set("X-Strata-User", claims.Subject)
+	attachClusterCreds(cluster, args, headers)
 
 	result, err := s.mcp.CallToolWithHeaders(r.Context(), "apply_manifest", args, headers)
 	if err != nil {
@@ -370,8 +511,8 @@ func (s *Server) handleExecCommand(w http.ResponseWriter, r *http.Request) {
 	}
 
 	headers := http.Header{}
-	headers.Set("X-Strata-Kubeconfig", cluster.KubeconfigPath)
 	headers.Set("X-Strata-User", claims.Subject)
+	attachClusterCreds(cluster, args, headers)
 
 	result, err := s.mcp.CallToolWithHeaders(r.Context(), "exec_command", args, headers)
 	if err != nil {

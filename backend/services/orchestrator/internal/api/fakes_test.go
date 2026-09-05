@@ -53,12 +53,26 @@ func (f *fakeStore) GetCluster(_ context.Context, userID, clusterID string) (*st
 	return &c, nil
 }
 
-// CreateCluster is a test helper — production code uses *store.Store.
-func (f *fakeStore) CreateCluster(_ context.Context, c store.Cluster, path string) error {
+// CreateCluster implements ClusterStore for tests.
+func (f *fakeStore) CreateCluster(_ context.Context, c store.Cluster, creds store.ClusterCreds) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	c.KubeconfigPath = path
+	c.KubeconfigPath = creds.KubeconfigPath
+	c.EncryptedKubeconfig = creds.EncryptedKubeconfig
+	c.DEKCiphertext = creds.DEKCiphertext
 	f.clusters[c.ID] = c
+	return nil
+}
+
+// DeleteCluster implements ClusterStore for tests.
+func (f *fakeStore) DeleteCluster(_ context.Context, userID, clusterID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c, ok := f.clusters[clusterID]
+	if !ok || c.UserID != userID {
+		return store.ErrNotFound
+	}
+	delete(f.clusters, clusterID)
 	return nil
 }
 

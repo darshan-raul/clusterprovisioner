@@ -57,3 +57,42 @@ export async function fetchClusters(accessToken: string): Promise<Cluster[]> {
     return [];
   }
 }
+
+export interface CreateClusterInput {
+  name: string;
+  context?: string;
+  kubeconfig: string;
+}
+
+export async function createCluster(
+  accessToken: string,
+  input: CreateClusterInput
+): Promise<Cluster> {
+  const res = await fetch(`${getOrchestratorUrl()}/api/v1/clusters`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `HTTP ${res.status}`);
+  }
+  const data = await res.json();
+  return data.cluster;
+}
+
+export async function deleteCluster(
+  accessToken: string,
+  clusterId: string
+): Promise<boolean> {
+  const res = await fetch(`${getOrchestratorUrl()}/api/v1/clusters/${clusterId}`, {
+    method: "DELETE",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+  return res.ok;
+}

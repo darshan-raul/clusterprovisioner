@@ -15,9 +15,11 @@ import logging
 from typing import Any
 
 from fastmcp import FastMCP
-from kubernetes import client, config
+from kubernetes import client
 from kubernetes.client.rest import ApiException
 from pydantic import BaseModel, Field
+
+from strata_mcp_k8s.kube import load_kubeconfig
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +70,8 @@ def register_list_pods(mcp: FastMCP) -> None:
         cluster_id: str,
         namespace: str = "default",
         label_selector: str | None = None,
+        kubeconfig_encrypted: str | None = None,
+        kubeconfig_path: str | None = None,
     ) -> list[dict[str, Any]]:
         """List pods in a Kubernetes cluster.
 
@@ -75,7 +79,11 @@ def register_list_pods(mcp: FastMCP) -> None:
         the LLM sees.
         """
         try:
-            api_client = _load_kubeconfig(cluster_id)
+            api_client = load_kubeconfig(
+                cluster_id,
+                kubeconfig_encrypted=kubeconfig_encrypted,
+                kubeconfig_path=kubeconfig_path,
+            )
             api = client.CoreV1Api(api_client)
             kwargs: dict[str, Any] = {}
             if namespace:
@@ -115,26 +123,6 @@ report plainly.
 This is a read-only tool. Phase 1 ships only this tool; mutations
 (delete, apply, exec) land in Phase 3.
 """
-
-
-def _load_kubeconfig(cluster_id: str) -> client.ApiClient:
-    """Load a kubeconfig for the given cluster.
-
-    In Phase 1 the orchestrator mounts a kubeconfig per cluster at
-    a deterministic path (``/etc/strata/kubeconfigs/{cluster_id}``).
-    The orchestrator also passes the path in the
-    ``X-Strata-Kubeconfig`` request header, but FastMCP doesn't
-    surface request headers to tools by default. We read the
-    cluster-scoped env var instead.
-
-    Returns an ``ApiClient`` (the kubernetes library expects this
-    for newer clients; passing a bare ``Configuration`` triggers
-    AttributeError on ``select_header_accept``).
-    """
-    kubeconfig_path = f"/etc/strata/kubeconfigs/{cluster_id}"
-    cfg = client.Configuration()
-    config.load_kube_config(config_file=kubeconfig_path, client_configuration=cfg)
-    return client.ApiClient(configuration=cfg)
 
 
 def _format_pod(pod) -> dict[str, Any]:

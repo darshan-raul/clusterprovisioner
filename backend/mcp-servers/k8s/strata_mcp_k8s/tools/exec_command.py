@@ -43,6 +43,8 @@ def register_exec_command(mcp: FastMCP) -> None:
         command: list[str] | str,
         namespace: str = "default",
         container: str | None = None,
+        kubeconfig_encrypted: str | None = None,
+        kubeconfig_path: str | None = None,
     ) -> dict[str, Any]:
         """Execute a command inside a Kubernetes pod.
 
@@ -57,7 +59,11 @@ def register_exec_command(mcp: FastMCP) -> None:
             raise RuntimeError("command cannot be empty")
 
         try:
-            api_client = load_kubeconfig(cluster_id)
+            api_client = load_kubeconfig(
+                cluster_id,
+                kubeconfig_encrypted=kubeconfig_encrypted,
+                kubeconfig_path=kubeconfig_path,
+            )
             api = client.CoreV1Api(api_client)
 
             kwargs: dict[str, Any] = {

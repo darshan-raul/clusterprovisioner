@@ -17,12 +17,21 @@ import (
 
 // Cluster is one row of the clusters table joined with its credentials.
 type Cluster struct {
-	ID             string    `db:"id"             json:"id"`
-	UserID         string    `db:"user_id"        json:"user_id"`
-	Name           string    `db:"name"           json:"name"`
-	Context        string    `db:"context"        json:"context"`
-	CreatedAt      time.Time `db:"created_at"     json:"created_at"`
-	KubeconfigPath string    `db:"kubeconfig_path" json:"kubeconfig_path"`
+	ID                  string    `db:"id"                   json:"id"`
+	UserID              string    `db:"user_id"              json:"user_id"`
+	Name                string    `db:"name"                 json:"name"`
+	Context             string    `db:"context"              json:"context"`
+	CreatedAt           time.Time `db:"created_at"           json:"created_at"`
+	KubeconfigPath      string    `db:"kubeconfig_path"      json:"kubeconfig_path,omitempty"`
+	EncryptedKubeconfig string    `db:"encrypted_kubeconfig" json:"-"`
+	DEKCiphertext       string    `db:"dek_ciphertext"       json:"-"`
+}
+
+// ClusterCreds holds credential data associated with a cluster.
+type ClusterCreds struct {
+	KubeconfigPath      string
+	EncryptedKubeconfig string
+	DEKCiphertext       string
 }
 
 // User is the cached Keycloak subject.
@@ -72,7 +81,9 @@ func (s *Store) EnsureUser(ctx context.Context, u User) error {
 func (s *Store) ListClusters(ctx context.Context, userID string) ([]Cluster, error) {
 	const q = `
 		SELECT c.id, c.user_id, c.name, c.context, c.created_at,
-		       COALESCE(cc.kubeconfig_path, '') AS kubeconfig_path
+		       COALESCE(cc.kubeconfig_path, '') AS kubeconfig_path,
+		       COALESCE(cc.encrypted_kubeconfig, '') AS encrypted_kubeconfig,
+		       COALESCE(cc.dek_ciphertext, '') AS dek_ciphertext
 		FROM clusters c
 		LEFT JOIN cluster_creds cc ON cc.cluster_id = c.id
 		WHERE c.user_id = $1
@@ -90,7 +101,9 @@ func (s *Store) ListClusters(ctx context.Context, userID string) ([]Cluster, err
 func (s *Store) GetCluster(ctx context.Context, userID, clusterID string) (*Cluster, error) {
 	const q = `
 		SELECT c.id, c.user_id, c.name, c.context, c.created_at,
-		       COALESCE(cc.kubeconfig_path, '') AS kubeconfig_path
+		       COALESCE(cc.kubeconfig_path, '') AS kubeconfig_path,
+		       COALESCE(cc.encrypted_kubeconfig, '') AS encrypted_kubeconfig,
+		       COALESCE(cc.dek_ciphertext, '') AS dek_ciphertext
 		FROM clusters c
 		LEFT JOIN cluster_creds cc ON cc.cluster_id = c.id
 		WHERE c.id = $1 AND c.user_id = $2
@@ -105,10 +118,8 @@ func (s *Store) GetCluster(ctx context.Context, userID, clusterID string) (*Clus
 	return &c, nil
 }
 
-// CreateCluster registers a new cluster for a user. Phase 1's
-// "create cluster" flow is just the seeded mock cluster, but the
-// method is here for the upcoming Phase 4 web form.
-func (s *Store) CreateCluster(ctx context.Context, c Cluster, kubeconfigPath string) error {
+// CreateCluster registers a new cluster for a user.
+func (s *Store) CreateCluster(ctx context.Context, c Cluster, creds ClusterCreds) error {
 	tx, err := s.db.BeginTxx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("CreateCluster: begin: %w", err)
@@ -122,14 +133,32 @@ func (s *Store) CreateCluster(ctx context.Context, c Cluster, kubeconfigPath str
 		return fmt.Errorf("CreateCluster insert cluster: %w", err)
 	}
 	const insertCreds = `
-		INSERT INTO cluster_creds (cluster_id, kubeconfig_path)
-		VALUES ($1, $2)
+		INSERT INTO cluster_creds (cluster_id, kubeconfig_path, encrypted_kubeconfig, dek_ciphertext)
+		VALUES ($1, $2, $3, $4)
 	`
-	if _, err := tx.ExecContext(ctx, insertCreds, c.ID, kubeconfigPath); err != nil {
+	if _, err := tx.ExecContext(ctx, insertCreds, c.ID, creds.KubeconfigPath, creds.EncryptedKubeconfig, creds.DEKCiphertext); err != nil {
 		return fmt.Errorf("CreateCluster insert creds: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("CreateCluster commit: %w", err)
+	}
+	return nil
+}
+
+// DeleteCluster removes a cluster and its associated credentials for the given user.
+// ErrNotFound is returned if no matching cluster exists.
+func (s *Store) DeleteCluster(ctx context.Context, userID, clusterID string) error {
+	const q = `DELETE FROM clusters WHERE id = $1 AND user_id = $2`
+	res, err := s.db.ExecContext(ctx, q, clusterID, userID)
+	if err != nil {
+		return fmt.Errorf("DeleteCluster: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("DeleteCluster rows affected: %w", err)
+	}
+	if n == 0 {
+		return ErrNotFound
 	}
 	return nil
 }

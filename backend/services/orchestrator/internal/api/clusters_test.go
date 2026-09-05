@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/strata/orchestrator/internal/store"
+	"github.com/strata/shared/pkg/crypto"
 )
 
 func seedAlice(srv *Server) {
@@ -15,7 +16,7 @@ func seedAlice(srv *Server) {
 	_ = fs.EnsureUser(context.Background(), store.User{ID: "alice", Username: "alice"})
 	_ = fs.CreateCluster(context.Background(), store.Cluster{
 		ID: "cl-001", UserID: "alice", Name: "demo", Context: "demo-ctx",
-	}, "/etc/strata/kubeconfigs/cl-001")
+	}, store.ClusterCreds{KubeconfigPath: "/etc/strata/kubeconfigs/cl-001"})
 }
 
 func TestListClusters_ReturnsUsersClusters(t *testing.T) {
@@ -305,4 +306,212 @@ func TestExecCommand_RequiresCommand(t *testing.T) {
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", resp.StatusCode)
 	}
+}
+
+func TestCreateCluster_HappyPath(t *testing.T) {
+	ts, srv, priv := testServer(t)
+	seedAlice(srv)
+
+	tok := mintToken(t, priv, "test-kid", "alice", "strata-tui", false)
+	kubeconfig := `
+apiVersion: v1
+kind: Config
+current-context: dev-ctx
+contexts:
+- name: dev-ctx
+  context:
+    cluster: dev-cluster
+    user: dev-user
+clusters:
+- name: dev-cluster
+  cluster:
+    server: https://127.0.0.1:6443
+users:
+- name: dev-user
+  user:
+    token: fake-token
+`
+	reqBody := `{"name":"staging","kubeconfig":` + strconvQuote(kubeconfig) + `}`
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/clusters", strings.NewReader(reqBody))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", resp.StatusCode)
+	}
+	var res struct {
+		Cluster store.Cluster `json:"cluster"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(res.Cluster.ID, "cl-") {
+		t.Errorf("cluster id = %q, expected prefix cl-", res.Cluster.ID)
+	}
+	if res.Cluster.Name != "staging" {
+		t.Errorf("name = %q, want 'staging'", res.Cluster.Name)
+	}
+	if res.Cluster.Context != "dev-ctx" {
+		t.Errorf("context = %q, want 'dev-ctx'", res.Cluster.Context)
+	}
+
+	// Verify the stored cluster in the fakeStore has encrypted credentials
+	fs := srv.store.(*fakeStore)
+	stored, err := fs.GetCluster(context.Background(), "alice", res.Cluster.ID)
+	if err != nil {
+		t.Fatalf("cluster not in store: %v", err)
+	}
+	if stored.EncryptedKubeconfig == "" {
+		t.Fatal("expected non-empty encrypted kubeconfig in store")
+	}
+
+	// Decrypt stored credentials and check they match original
+	key := crypto.DeriveKey(srv.cfg.EncryptionSecret)
+	decrypted, err := crypto.Decrypt(key, stored.EncryptedKubeconfig)
+	if err != nil {
+		t.Fatalf("failed to decrypt stored kubeconfig: %v", err)
+	}
+	if strings.TrimSpace(string(decrypted)) != strings.TrimSpace(kubeconfig) {
+		t.Errorf("decrypted = %q, want %q", string(decrypted), kubeconfig)
+	}
+}
+
+func TestCreateCluster_InvalidYAML(t *testing.T) {
+	ts, srv, priv := testServer(t)
+	seedAlice(srv)
+
+	tok := mintToken(t, priv, "test-kid", "alice", "strata-tui", false)
+	reqBody := `{"name":"staging","kubeconfig":"this is not: yaml: [broken"}`
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/clusters", strings.NewReader(reqBody))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestCreateCluster_MissingFields(t *testing.T) {
+	ts, srv, priv := testServer(t)
+	seedAlice(srv)
+
+	tok := mintToken(t, priv, "test-kid", "alice", "strata-tui", false)
+	reqBody := `{"name":"","kubeconfig":"apiVersion: v1"}`
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/clusters", strings.NewReader(reqBody))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestDeleteCluster_HappyPath(t *testing.T) {
+	ts, srv, priv := testServer(t)
+	seedAlice(srv)
+
+	tok := mintToken(t, priv, "test-kid", "alice", "strata-tui", false)
+	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/api/v1/clusters/cl-001", nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	// Verify cluster is now deleted
+	fs := srv.store.(*fakeStore)
+	if _, err := fs.GetCluster(context.Background(), "alice", "cl-001"); err != store.ErrNotFound {
+		t.Errorf("expected ErrNotFound after deletion, got %v", err)
+	}
+}
+
+func TestDeleteCluster_NotFound(t *testing.T) {
+	ts, srv, priv := testServer(t)
+	seedAlice(srv)
+
+	tok := mintToken(t, priv, "test-kid", "alice", "strata-tui", false)
+	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/api/v1/clusters/cl-nonexistent", nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestDeleteCluster_OtherUser(t *testing.T) {
+	ts, srv, priv := testServer(t)
+	seedAlice(srv)
+	fs := srv.store.(*fakeStore)
+	_ = fs.EnsureUser(context.Background(), store.User{ID: "bob", Username: "bob"})
+
+	tok := mintToken(t, priv, "test-kid", "bob", "strata-tui", false)
+	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/api/v1/clusters/cl-001", nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestListPods_PropagatesEncryptedKubeconfig(t *testing.T) {
+	ts, srv, priv := testServer(t)
+	fs := srv.store.(*fakeStore)
+	_ = fs.EnsureUser(context.Background(), store.User{ID: "alice", Username: "alice"})
+	_ = fs.CreateCluster(context.Background(), store.Cluster{
+		ID: "cl-enc-mcp", UserID: "alice", Name: "enc-cluster", Context: "ctx",
+	}, store.ClusterCreds{
+		EncryptedKubeconfig: "test-encrypted-payload",
+	})
+
+	tok := mintToken(t, priv, "test-kid", "alice", "strata-tui", false)
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/v1/clusters/cl-enc-mcp/pods", nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+
+	m := srv.mcp.(*fakeMCP)
+	if len(m.calls) != 1 {
+		t.Fatalf("mcp calls = %d", len(m.calls))
+	}
+	if got := m.calls[0].Args["kubeconfig_encrypted"]; got != "test-encrypted-payload" {
+		t.Errorf("args[kubeconfig_encrypted] = %v", got)
+	}
+	if got := m.calls[0].Headers.Get("X-Strata-Encrypted-Kubeconfig"); got != "test-encrypted-payload" {
+		t.Errorf("X-Strata-Encrypted-Kubeconfig = %q", got)
+	}
+}
+
+func strconvQuote(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
 }

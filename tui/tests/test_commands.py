@@ -9,6 +9,7 @@ import pytest
 from strata_tui.app import StrataTUIApp
 from strata_tui.commands.apply import ApplyCommand
 from strata_tui.commands.apply import parse as parse_apply
+from strata_tui.commands.context import ContextCommand
 from strata_tui.commands.delete import DeleteCommand
 from strata_tui.commands.delete import parse as parse_delete
 from strata_tui.commands.exec import ExecCommand
@@ -197,3 +198,58 @@ async def test_exec_command_allowed(fake_app: StrataTUIApp, monkeypatch) -> None
         )
         history = fake_app.query_one("#history", MessageHistory)
         assert any("test output" in str(line) for line in history.lines)
+
+
+@pytest.mark.asyncio
+async def test_context_list_highlights_active(fake_app: StrataTUIApp) -> None:
+    c1 = _FakeCluster()
+    c2 = _FakeCluster()
+    c2.id = "cl-other"
+    c2.name = "other-cluster"
+    c2.context = "other-ctx"
+    fake_app._client.list_clusters.return_value = [c1, c2]
+
+    async with fake_app.run_test() as pilot:
+        await pilot.pause()
+        cmd = ContextCommand(fake_app)
+        await cmd.execute(["list"])
+        history = fake_app.query_one("#history", MessageHistory)
+        # c1 is active, should have *
+        assert any("* cl-test" in str(line) for line in history.lines)
+
+
+@pytest.mark.asyncio
+async def test_context_add_reads_file_and_registers(
+    fake_app: StrataTUIApp, tmp_path
+) -> None:
+    kc_file = tmp_path / "kubeconfig"
+    kc_file.write_text("apiVersion: v1\nkind: Config\nclusters: []")
+
+    created = _FakeCluster()
+    created.id = "cl-added"
+    created.name = "new-cluster"
+    created.context = "dev"
+    fake_app._client.create_cluster.return_value = created
+
+    async with fake_app.run_test() as pilot:
+        await pilot.pause()
+        cmd = ContextCommand(fake_app)
+        await cmd.execute(["add", "new-cluster", str(kc_file)])
+        fake_app._client.create_cluster.assert_called_once_with(
+            "new-cluster", "apiVersion: v1\nkind: Config\nclusters: []", context=None
+        )
+        assert fake_app.active_cluster.id == "cl-added"
+
+
+@pytest.mark.asyncio
+async def test_context_delete(fake_app: StrataTUIApp) -> None:
+    c1 = _FakeCluster()
+    fake_app._client.list_clusters.return_value = [c1]
+    fake_app._client.delete_cluster.return_value = {"status": "deleted"}
+
+    async with fake_app.run_test() as pilot:
+        await pilot.pause()
+        cmd = ContextCommand(fake_app)
+        await cmd.execute(["delete", "cl-test"])
+        fake_app._client.delete_cluster.assert_called_once_with("cl-test")
+        assert fake_app.active_cluster is None

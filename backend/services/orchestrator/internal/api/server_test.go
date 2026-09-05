@@ -40,9 +40,10 @@ func testServer(t *testing.T) (*httptest.Server, *Server, *rsa.PrivateKey) {
 		Audience: "strata-tui",
 	})
 	cfg := config.Config{
-		KeycloakURL:   "http://test",
-		KeycloakRealm: "strata-dev",
-		JWTAudience:   "strata-tui",
+		KeycloakURL:      "http://test",
+		KeycloakRealm:    "strata-dev",
+		JWTAudience:      "strata-tui",
+		EncryptionSecret: "test-encryption-secret",
 	}
 	log := zerolog.Nop()
 	st := newFakeStore()

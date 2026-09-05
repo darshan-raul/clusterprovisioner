@@ -68,6 +68,8 @@ def register_apply_manifest(mcp: FastMCP) -> None:
         cluster_id: str,
         manifest_yaml: str,
         namespace: str = "default",
+        kubeconfig_encrypted: str | None = None,
+        kubeconfig_path: str | None = None,
     ) -> dict[str, Any]:
         """Apply a Kubernetes YAML/JSON manifest.
 
@@ -85,7 +87,11 @@ def register_apply_manifest(mcp: FastMCP) -> None:
         if not valid_docs:
             raise RuntimeError("manifest contains no valid Kubernetes resources")
 
-        api_client = load_kubeconfig(cluster_id)
+        api_client = load_kubeconfig(
+            cluster_id,
+            kubeconfig_encrypted=kubeconfig_encrypted,
+            kubeconfig_path=kubeconfig_path,
+        )
         applied: list[dict[str, Any]] = []
 
         for doc in valid_docs:

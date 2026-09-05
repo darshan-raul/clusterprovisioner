@@ -1,7 +1,8 @@
 import { redirect } from "next/navigation";
-import { Layers, Server, Terminal, Shield, CheckCircle2, RefreshCw } from "lucide-react";
+import { Terminal } from "lucide-react";
 import { getSession } from "@/lib/session";
 import { fetchClusters, fetchUserMe } from "@/lib/orchestrator";
+import { ClusterManager } from "./cluster-manager";
 
 export default async function DashboardPage() {
   const session = await getSession();
@@ -9,7 +10,7 @@ export default async function DashboardPage() {
     redirect("/login");
   }
 
-  const [clusters, me] = await Promise.all([
+  const [clusters] = await Promise.all([
     fetchClusters(session.accessToken),
     fetchUserMe(session.accessToken),
   ]);
@@ -45,61 +46,8 @@ export default async function DashboardPage() {
         </div>
       </div>
 
-      {/* Clusters Section */}
-      <div className="flex flex-col gap-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Server className="w-5 h-5 text-sky-400" />
-            <h2 className="text-lg font-bold text-white">Registered Clusters</h2>
-            <span className="px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 text-xs font-mono">
-              {clusters.length}
-            </span>
-          </div>
-          <span className="text-xs text-slate-500 font-mono">Read-Only Viewer</span>
-        </div>
-
-        {clusters.length === 0 ? (
-          <div className="p-12 rounded-2xl bg-slate-900/40 border border-slate-800 border-dashed text-center flex flex-col items-center gap-3">
-            <Server className="w-10 h-10 text-slate-600" />
-            <h3 className="text-sm font-semibold text-slate-300">No clusters registered yet</h3>
-            <p className="text-xs text-slate-500 max-w-sm">
-              Use the Strata TUI or register existing clusters via the backend registry.
-            </p>
-          </div>
-        ) : (
-          <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-900/60">
-            <table className="w-full text-left text-sm">
-              <thead className="bg-slate-950/80 border-b border-slate-800 text-xs font-mono text-slate-400">
-                <tr>
-                  <th className="py-3.5 px-4">CLUSTER ID</th>
-                  <th className="py-3.5 px-4">NAME</th>
-                  <th className="py-3.5 px-4">CONTEXT</th>
-                  <th className="py-3.5 px-4">STATUS</th>
-                  <th className="py-3.5 px-4">REGISTERED</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-800/60 font-mono text-xs">
-                {clusters.map((cluster) => (
-                  <tr key={cluster.id} className="hover:bg-slate-800/30 transition-colors">
-                    <td className="py-3.5 px-4 text-sky-400 font-semibold">{cluster.id}</td>
-                    <td className="py-3.5 px-4 text-white">{cluster.name}</td>
-                    <td className="py-3.5 px-4 text-slate-300">{cluster.context}</td>
-                    <td className="py-3.5 px-4">
-                      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-950/80 border border-emerald-800/60 text-emerald-400 text-[11px]">
-                        <CheckCircle2 className="w-3 h-3" />
-                        <span>Ready</span>
-                      </span>
-                    </td>
-                    <td className="py-3.5 px-4 text-slate-400">
-                      {new Date(cluster.created_at).toLocaleDateString()}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
+      {/* Clusters Management Section */}
+      <ClusterManager initialClusters={clusters} />
 
       {/* TUI Quickstart card */}
       <div className="p-6 rounded-2xl bg-gradient-to-br from-slate-900/90 to-sky-950/30 border border-sky-900/40 flex flex-col gap-4">

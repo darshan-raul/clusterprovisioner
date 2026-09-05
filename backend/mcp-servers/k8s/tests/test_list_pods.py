@@ -71,8 +71,8 @@ async def test_list_pods_returns_formatted_summaries(mcp) -> None:
     api.list_namespaced_pod.return_value.items = pods
 
     with patch("strata_mcp_k8s.tools.list_pods.client") as kc, \
-         patch("strata_mcp_k8s.tools.list_pods.config") as kconf:
-        kc.ApiClient.return_value = MagicMock()  # returned by _load_kubeconfig
+         patch("strata_mcp_k8s.tools.list_pods.load_kubeconfig") as mock_load:
+        mock_load.return_value = MagicMock()
         kc.CoreV1Api.return_value = api
         tool = await _get_tool(mcp, "list_pods")
         result = tool.fn(cluster_id="cl-mock-01", namespace="default")
@@ -83,7 +83,7 @@ async def test_list_pods_returns_formatted_summaries(mcp) -> None:
     assert result[1]["phase"] == "Pending"
     assert result[1]["ready"] == "0/1"
     assert result[2]["age"].endswith("d")  # 86400s -> "1d"
-    kconf.load_kube_config.assert_called_once()
+    mock_load.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -95,8 +95,8 @@ async def test_list_pods_propagates_k8s_api_error(mcp) -> None:
     api.list_namespaced_pod.side_effect = ApiException(status=503, reason="unavailable")
 
     with patch("strata_mcp_k8s.tools.list_pods.client") as kc, \
-         patch("strata_mcp_k8s.tools.list_pods.config"):
-        kc.ApiClient.return_value = MagicMock()
+         patch("strata_mcp_k8s.tools.list_pods.load_kubeconfig") as mock_load:
+        mock_load.return_value = MagicMock()
         kc.CoreV1Api.return_value = api
         tool = await _get_tool(mcp, "list_pods")
         with pytest.raises(RuntimeError, match="unavailable"):

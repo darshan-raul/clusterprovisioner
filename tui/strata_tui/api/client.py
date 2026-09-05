@@ -97,6 +97,39 @@ class StrataClient:
             for c in clusters
         ]
 
+    async def create_cluster(
+        self,
+        name: str,
+        kubeconfig: str,
+        *,
+        context: str | None = None,
+    ) -> Cluster:
+        payload: dict[str, Any] = {
+            "name": name,
+            "kubeconfig": kubeconfig,
+        }
+        if context:
+            payload["context"] = context
+        resp = await self._http.post(
+            f"{self._base}/api/v1/clusters",
+            headers=self._headers(),
+            json=payload,
+        )
+        data = _parse(resp)
+        c = data.get("cluster") or {}
+        return Cluster(
+            id=c.get("id", ""),
+            name=c.get("name", ""),
+            context=c.get("context", ""),
+        )
+
+    async def delete_cluster(self, cluster_id: str) -> dict[str, Any]:
+        resp = await self._http.delete(
+            f"{self._base}/api/v1/clusters/{cluster_id}",
+            headers=self._headers(),
+        )
+        return _parse(resp)
+
     async def list_pods(
         self,
         cluster_id: str,

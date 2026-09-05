@@ -28,9 +28,11 @@ CREATE TABLE IF NOT EXISTS clusters (
 
 CREATE INDEX IF NOT EXISTS idx_clusters_user ON clusters (user_id);
 
--- Phase 1 stores the kubeconfig path the MCP server should use.
--- Phase 4 replaces this with encrypted ciphertext + a KMS-wrapped DEK.
+-- Phase 1 stored the kubeconfig path the MCP server should use.
+-- Phase 4 adds encrypted ciphertext + a KMS-wrapped DEK.
 CREATE TABLE IF NOT EXISTS cluster_creds (
-    cluster_id      TEXT PRIMARY KEY REFERENCES clusters(id) ON DELETE CASCADE,
-    kubeconfig_path TEXT NOT NULL
+    cluster_id           TEXT PRIMARY KEY REFERENCES clusters(id) ON DELETE CASCADE,
+    kubeconfig_path      TEXT NOT NULL DEFAULT '',
+    encrypted_kubeconfig TEXT NOT NULL DEFAULT '',
+    dek_ciphertext       TEXT NOT NULL DEFAULT ''
 );

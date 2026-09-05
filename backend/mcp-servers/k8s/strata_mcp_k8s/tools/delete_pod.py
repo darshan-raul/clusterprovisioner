@@ -41,13 +41,19 @@ def register_delete_pod(mcp: FastMCP) -> None:
         name: str,
         namespace: str = "default",
         grace_period_seconds: int | None = None,
+        kubeconfig_encrypted: str | None = None,
+        kubeconfig_path: str | None = None,
     ) -> dict[str, Any]:
         """Delete a pod in a Kubernetes cluster.
 
         See ``DELETE_POD_DESCRIPTION`` for full details.
         """
         try:
-            api_client = load_kubeconfig(cluster_id)
+            api_client = load_kubeconfig(
+                cluster_id,
+                kubeconfig_encrypted=kubeconfig_encrypted,
+                kubeconfig_path=kubeconfig_path,
+            )
             api = client.CoreV1Api(api_client)
             delete_opts = (
                 client.V1DeleteOptions(grace_period_seconds=grace_period_seconds)
