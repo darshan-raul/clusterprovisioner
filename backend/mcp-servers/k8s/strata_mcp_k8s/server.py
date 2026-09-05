@@ -22,7 +22,12 @@ import os
 
 from fastmcp import FastMCP
 
-from strata_mcp_k8s.tools.list_pods import register_list_pods
+from strata_mcp_k8s.tools import (
+    register_apply_manifest,
+    register_delete_pod,
+    register_exec_command,
+    register_list_pods,
+)
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "info").upper(),
@@ -35,11 +40,14 @@ mcp = FastMCP(
     instructions=(
         "Kubernetes tools for the Strata backend. Tools take a "
         "cluster_id and resource-scoped arguments (namespace, "
-        "label_selector, etc.). All tools are read-only in Phase 1."
+        "manifest, command, etc.). Mutating operations require confirmation."
     ),
 )
 
 register_list_pods(mcp)
+register_delete_pod(mcp)
+register_apply_manifest(mcp)
+register_exec_command(mcp)
 
 
 def main() -> None:

@@ -129,6 +129,64 @@ class StrataClient:
             raise StrataClientError(f"unexpected response shape: {data!r}")
         return data
 
+    async def delete_pod(
+        self,
+        cluster_id: str,
+        name: str,
+        *,
+        namespace: str | None = None,
+        grace_period_seconds: int | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, str] = {}
+        if namespace:
+            params["namespace"] = namespace
+        if grace_period_seconds is not None:
+            params["grace-period-seconds"] = str(grace_period_seconds)
+        resp = await self._http.delete(
+            f"{self._base}/api/v1/clusters/{cluster_id}/pods/{name}",
+            headers=self._headers(),
+            params=params,
+        )
+        return _parse_mcp(resp)
+
+    async def apply_manifest(
+        self,
+        cluster_id: str,
+        manifest: str,
+        *,
+        namespace: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"manifest": manifest}
+        if namespace:
+            payload["namespace"] = namespace
+        resp = await self._http.post(
+            f"{self._base}/api/v1/clusters/{cluster_id}/apply",
+            headers=self._headers(),
+            json=payload,
+        )
+        return _parse_mcp(resp)
+
+    async def exec_command(
+        self,
+        cluster_id: str,
+        pod: str,
+        command: str | list[str],
+        *,
+        namespace: str | None = None,
+        container: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"command": command}
+        if namespace:
+            payload["namespace"] = namespace
+        if container:
+            payload["container"] = container
+        resp = await self._http.post(
+            f"{self._base}/api/v1/clusters/{cluster_id}/pods/{pod}/exec",
+            headers=self._headers(),
+            json=payload,
+        )
+        return _parse_mcp(resp)
+
     async def healthz(self) -> dict[str, Any]:
         return await self._get("/healthz")
 
@@ -152,3 +210,29 @@ def _parse(resp: httpx.Response) -> dict[str, Any]:
         raise StrataClientError(
             f"non-JSON response from {resp.url.path}: {exc}"
         ) from exc
+
+
+def _parse_mcp(resp: httpx.Response) -> dict[str, Any]:
+    if resp.status_code == 401:
+        raise StrataClientError("unauthorized (token may be expired)")
+    if resp.status_code == 404:
+        raise StrataClientError(f"not found: {resp.url.path}")
+    if resp.status_code >= 400:
+        raise StrataClientError(
+            f"HTTP {resp.status_code} on {resp.url.path}: {resp.text[:200]}"
+        )
+    try:
+        data = resp.json()
+    except ValueError as exc:
+        raise StrataClientError(f"non-JSON response from {resp.url.path}: {exc}") from exc
+
+    if isinstance(data, dict):
+        if data.get("isError") and "content" in data:
+            content = data.get("content")
+            if isinstance(content, list) and content:
+                first = content[0]
+                if isinstance(first, dict) and first.get("type") == "text":
+                    raise StrataClientError(first.get("text", "unknown error"))
+            raise StrataClientError("MCP tool reported error")
+        return data
+    raise StrataClientError(f"unexpected response shape: {data!r}")

@@ -152,6 +152,25 @@ echo "$PODS"
 # from the orchestrator. The response will be the MCP error envelope.
 echo "$PODS" | grep -q '"content"' || fail "MCP pods call did not return an MCP envelope"
 
+step "Testing orchestrator /api/v1/clusters/cl-mock-01/pods/test-pod (DELETE) with real Keycloak JWT"
+DEL_RESP=$(curl -sf -X DELETE -H "Authorization: Bearer $ACCESS_TOKEN" http://localhost:8080/api/v1/clusters/cl-mock-01/pods/test-pod)
+echo "$DEL_RESP"
+echo "$DEL_RESP" | grep -q '"content"' || fail "MCP delete_pod call did not return an MCP envelope"
+
+step "Testing orchestrator /api/v1/clusters/cl-mock-01/apply (POST) with real Keycloak JWT"
+APPLY_RESP=$(curl -sf -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+    -d '{"manifest":"apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: test-cm"}' \
+    http://localhost:8080/api/v1/clusters/cl-mock-01/apply)
+echo "$APPLY_RESP"
+echo "$APPLY_RESP" | grep -q '"content"' || fail "MCP apply_manifest call did not return an MCP envelope"
+
+step "Testing orchestrator /api/v1/clusters/cl-mock-01/pods/test-pod/exec (POST) with real Keycloak JWT"
+EXEC_RESP=$(curl -sf -X POST -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+    -d '{"command":"uptime"}' \
+    http://localhost:8080/api/v1/clusters/cl-mock-01/pods/test-pod/exec)
+echo "$EXEC_RESP"
+echo "$EXEC_RESP" | grep -q '"content"' || fail "MCP exec_command call did not return an MCP envelope"
+
 # ── Bootstrap admin flow (fast local-iteration shortcut) ──────────────
 # The bootstrap admin token is a Phase 1 dev-only shortcut that lets
 # developers curl the orchestrator without a running Keycloak. It's

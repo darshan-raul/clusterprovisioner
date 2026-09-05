@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/strata/orchestrator/internal/store"
@@ -160,5 +161,148 @@ func TestListPods_MCPErrorBecomes502(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Errorf("status = %d, want 502", resp.StatusCode)
+	}
+}
+
+func TestDeletePod_HappyPath(t *testing.T) {
+	ts, srv, priv := testServer(t)
+	seedAlice(srv)
+
+	tok := mintToken(t, priv, "test-kid", "alice", "strata-tui", false)
+	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/api/v1/clusters/cl-001/pods/test-pod?namespace=prod&grace-period-seconds=5", nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	m := srv.mcp.(*fakeMCP)
+	if len(m.calls) != 1 {
+		t.Fatalf("mcp calls = %d", len(m.calls))
+	}
+	call := m.calls[0]
+	if call.Name != "delete_pod" {
+		t.Errorf("call name = %q, want delete_pod", call.Name)
+	}
+	if call.Args["name"] != "test-pod" || call.Args["namespace"] != "prod" || call.Args["grace_period_seconds"] != 5 {
+		t.Errorf("call args = %+v", call.Args)
+	}
+}
+
+func TestDeletePod_NotFound(t *testing.T) {
+	ts, srv, priv := testServer(t)
+	seedAlice(srv)
+
+	tok := mintToken(t, priv, "test-kid", "alice", "strata-tui", false)
+	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/api/v1/clusters/cl-missing/pods/test-pod", nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestApplyManifest_HappyPath(t *testing.T) {
+	ts, srv, priv := testServer(t)
+	seedAlice(srv)
+
+	tok := mintToken(t, priv, "test-kid", "alice", "strata-tui", false)
+	body := `{"manifest":"apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: cm","namespace":"default"}`
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/clusters/cl-001/apply", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	m := srv.mcp.(*fakeMCP)
+	if len(m.calls) != 1 {
+		t.Fatalf("mcp calls = %d", len(m.calls))
+	}
+	call := m.calls[0]
+	if call.Name != "apply_manifest" {
+		t.Errorf("call name = %q, want apply_manifest", call.Name)
+	}
+	if call.Args["cluster_id"] != "cl-001" || call.Args["namespace"] != "default" {
+		t.Errorf("call args = %+v", call.Args)
+	}
+}
+
+func TestApplyManifest_RequiresManifest(t *testing.T) {
+	ts, srv, priv := testServer(t)
+	seedAlice(srv)
+
+	tok := mintToken(t, priv, "test-kid", "alice", "strata-tui", false)
+	body := `{"manifest":"","namespace":"default"}`
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/clusters/cl-001/apply", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestExecCommand_HappyPath(t *testing.T) {
+	ts, srv, priv := testServer(t)
+	seedAlice(srv)
+
+	tok := mintToken(t, priv, "test-kid", "alice", "strata-tui", false)
+	body := `{"command":"whoami","namespace":"kube-system","container":"main"}`
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/clusters/cl-001/pods/test-pod/exec", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	m := srv.mcp.(*fakeMCP)
+	if len(m.calls) != 1 {
+		t.Fatalf("mcp calls = %d", len(m.calls))
+	}
+	call := m.calls[0]
+	if call.Name != "exec_command" {
+		t.Errorf("call name = %q, want exec_command", call.Name)
+	}
+	if call.Args["pod"] != "test-pod" || call.Args["command"] != "whoami" || call.Args["container"] != "main" {
+		t.Errorf("call args = %+v", call.Args)
+	}
+}
+
+func TestExecCommand_RequiresCommand(t *testing.T) {
+	ts, srv, priv := testServer(t)
+	seedAlice(srv)
+
+	tok := mintToken(t, priv, "test-kid", "alice", "strata-tui", false)
+	body := `{"namespace":"kube-system"}`
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/clusters/cl-001/pods/test-pod/exec", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
 	}
 }

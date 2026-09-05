@@ -239,3 +239,49 @@ async def test_healthz(mock_orchestrator: respx.MockRouter) -> None:
     client = StrataClient(base_url="http://orch")
     body = await client.healthz()
     assert body["status"] == "ok"
+
+
+async def test_delete_pod_success(mock_orchestrator: respx.MockRouter) -> None:
+    mock_orchestrator.delete("/api/v1/clusters/cl-001/pods/test-pod").respond(
+        200,
+        json={"status": "deleted", "name": "test-pod", "namespace": "default"},
+    )
+    client = StrataClient(base_url="http://orch", token="AT")
+    res = await client.delete_pod("cl-001", "test-pod")
+    assert res["status"] == "deleted"
+    assert res["name"] == "test-pod"
+
+
+async def test_delete_pod_mcp_error(mock_orchestrator: respx.MockRouter) -> None:
+    mock_orchestrator.delete("/api/v1/clusters/cl-001/pods/test-pod").respond(
+        200,
+        json={
+            "content": [{"type": "text", "text": "kubernetes API error: NotFound"}],
+            "isError": True,
+        },
+    )
+    client = StrataClient(base_url="http://orch", token="AT")
+    with pytest.raises(StrataClientError, match="NotFound"):
+        await client.delete_pod("cl-001", "test-pod")
+
+
+async def test_apply_manifest_success(mock_orchestrator: respx.MockRouter) -> None:
+    mock_orchestrator.post("/api/v1/clusters/cl-001/apply").respond(
+        200,
+        json={"status": "applied", "count": 1, "applied": [{"name": "cm", "action": "created"}]},
+    )
+    client = StrataClient(base_url="http://orch", token="AT")
+    res = await client.apply_manifest("cl-001", "apiVersion: v1\nkind: ConfigMap")
+    assert res["status"] == "applied"
+    assert res["count"] == 1
+
+
+async def test_exec_command_success(mock_orchestrator: respx.MockRouter) -> None:
+    mock_orchestrator.post("/api/v1/clusters/cl-001/pods/test-pod/exec").respond(
+        200,
+        json={"status": "completed", "output": "root\n"},
+    )
+    client = StrataClient(base_url="http://orch", token="AT")
+    res = await client.exec_command("cl-001", "test-pod", "whoami")
+    assert res["status"] == "completed"
+    assert res["output"] == "root\n"

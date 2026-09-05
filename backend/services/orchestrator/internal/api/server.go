@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -82,6 +83,9 @@ func (s *Server) Router() http.Handler {
 		r.Get("/", s.authMiddleware(s.handleListClusters))
 		r.Route("/{id}", func(r chi.Router) {
 			r.Get("/pods", s.authMiddleware(s.handleListPods))
+			r.Delete("/pods/{name}", s.authMiddleware(s.handleDeletePod))
+			r.Post("/apply", s.authMiddleware(s.handleApplyManifest))
+			r.Post("/pods/{name}/exec", s.authMiddleware(s.handleExecCommand))
 		})
 	})
 
@@ -190,6 +194,188 @@ func (s *Server) handleListPods(w http.ResponseWriter, r *http.Request) {
 	result, err := s.mcp.CallToolWithHeaders(r.Context(), "list_pods", args, headers)
 	if err != nil {
 		s.log.Error().Err(err).Str("cluster_id", clusterID).Msg("mcp call_tool")
+		writeError(w, http.StatusBadGateway, fmt.Sprintf("mcp call failed: %v", err))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(result)
+}
+
+// handleDeletePod proxies to the MCP k8s delete_pod tool.
+func (s *Server) handleDeletePod(w http.ResponseWriter, r *http.Request) {
+	claims, _ := claimsFrom(r)
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "no claims")
+		return
+	}
+	clusterID := chi.URLParam(r, "id")
+	podName := chi.URLParam(r, "name")
+	if clusterID == "" || podName == "" {
+		writeError(w, http.StatusBadRequest, "cluster id and pod name required")
+		return
+	}
+	cluster, err := s.store.GetCluster(r.Context(), claims.Subject, clusterID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "cluster not found")
+			return
+		}
+		s.log.Error().Err(err).Str("cluster_id", clusterID).Msg("get cluster")
+		writeError(w, http.StatusInternalServerError, "cluster lookup failed")
+		return
+	}
+
+	namespace := r.URL.Query().Get("namespace")
+	if namespace == "" {
+		namespace = "default"
+	}
+
+	args := map[string]any{
+		"cluster_id": cluster.ID,
+		"name":       podName,
+		"namespace":  namespace,
+	}
+	if gpStr := r.URL.Query().Get("grace-period-seconds"); gpStr != "" {
+		if gp, err := strconv.Atoi(gpStr); err == nil {
+			args["grace_period_seconds"] = gp
+		}
+	}
+
+	headers := http.Header{}
+	headers.Set("X-Strata-Kubeconfig", cluster.KubeconfigPath)
+	headers.Set("X-Strata-User", claims.Subject)
+
+	result, err := s.mcp.CallToolWithHeaders(r.Context(), "delete_pod", args, headers)
+	if err != nil {
+		s.log.Error().Err(err).Str("cluster_id", clusterID).Str("pod", podName).Msg("mcp delete_pod")
+		writeError(w, http.StatusBadGateway, fmt.Sprintf("mcp call failed: %v", err))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(result)
+}
+
+type ApplyRequest struct {
+	Manifest  string `json:"manifest"`
+	Namespace string `json:"namespace"`
+}
+
+// handleApplyManifest proxies to the MCP k8s apply_manifest tool.
+func (s *Server) handleApplyManifest(w http.ResponseWriter, r *http.Request) {
+	claims, _ := claimsFrom(r)
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "no claims")
+		return
+	}
+	clusterID := chi.URLParam(r, "id")
+	if clusterID == "" {
+		writeError(w, http.StatusBadRequest, "cluster id required")
+		return
+	}
+	cluster, err := s.store.GetCluster(r.Context(), claims.Subject, clusterID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "cluster not found")
+			return
+		}
+		s.log.Error().Err(err).Str("cluster_id", clusterID).Msg("get cluster")
+		writeError(w, http.StatusInternalServerError, "cluster lookup failed")
+		return
+	}
+
+	var req ApplyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "malformed request body")
+		return
+	}
+	if strings.TrimSpace(req.Manifest) == "" {
+		writeError(w, http.StatusBadRequest, "manifest is required")
+		return
+	}
+	if req.Namespace == "" {
+		req.Namespace = "default"
+	}
+
+	args := map[string]any{
+		"cluster_id":    cluster.ID,
+		"manifest_yaml": req.Manifest,
+		"namespace":     req.Namespace,
+	}
+
+	headers := http.Header{}
+	headers.Set("X-Strata-Kubeconfig", cluster.KubeconfigPath)
+	headers.Set("X-Strata-User", claims.Subject)
+
+	result, err := s.mcp.CallToolWithHeaders(r.Context(), "apply_manifest", args, headers)
+	if err != nil {
+		s.log.Error().Err(err).Str("cluster_id", clusterID).Msg("mcp apply_manifest")
+		writeError(w, http.StatusBadGateway, fmt.Sprintf("mcp call failed: %v", err))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(result)
+}
+
+type ExecRequest struct {
+	Command   any    `json:"command"`
+	Namespace string `json:"namespace"`
+	Container string `json:"container"`
+}
+
+// handleExecCommand proxies to the MCP k8s exec_command tool.
+func (s *Server) handleExecCommand(w http.ResponseWriter, r *http.Request) {
+	claims, _ := claimsFrom(r)
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "no claims")
+		return
+	}
+	clusterID := chi.URLParam(r, "id")
+	podName := chi.URLParam(r, "name")
+	if clusterID == "" || podName == "" {
+		writeError(w, http.StatusBadRequest, "cluster id and pod name required")
+		return
+	}
+	cluster, err := s.store.GetCluster(r.Context(), claims.Subject, clusterID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "cluster not found")
+			return
+		}
+		s.log.Error().Err(err).Str("cluster_id", clusterID).Msg("get cluster")
+		writeError(w, http.StatusInternalServerError, "cluster lookup failed")
+		return
+	}
+
+	var req ExecRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "malformed request body")
+		return
+	}
+	if req.Command == nil {
+		writeError(w, http.StatusBadRequest, "command is required")
+		return
+	}
+	if req.Namespace == "" {
+		req.Namespace = "default"
+	}
+
+	args := map[string]any{
+		"cluster_id": cluster.ID,
+		"pod":        podName,
+		"command":    req.Command,
+		"namespace":  req.Namespace,
+	}
+	if req.Container != "" {
+		args["container"] = req.Container
+	}
+
+	headers := http.Header{}
+	headers.Set("X-Strata-Kubeconfig", cluster.KubeconfigPath)
+	headers.Set("X-Strata-User", claims.Subject)
+
+	result, err := s.mcp.CallToolWithHeaders(r.Context(), "exec_command", args, headers)
+	if err != nil {
+		s.log.Error().Err(err).Str("cluster_id", clusterID).Str("pod", podName).Msg("mcp exec_command")
 		writeError(w, http.StatusBadGateway, fmt.Sprintf("mcp call failed: %v", err))
 		return
 	}

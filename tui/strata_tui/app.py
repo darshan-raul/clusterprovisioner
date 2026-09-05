@@ -12,33 +12,31 @@ This module is the **top of the runtime stack**. It ties together:
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
+from typing import Any
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
+from langgraph.types import Command
 from textual import work
 from textual.app import App, ComposeResult
 from textual.containers import Vertical
 from textual.widgets import Header, Input
 
+from strata_tui.agent import build_strata_tools, create_agent_graph
 from strata_tui.api.auth import DeviceCodeFlow
 from strata_tui.api.client import Cluster, StrataClient
-from strata_tui.api.tokens import clear_token, load_token
-from strata_tui.commands import ContextCommand, GetCommand, parse_command_line
-from strata_tui.config import load_settings
-from strata_tui.screens import LoginScreen
-from strata_tui.widgets import MessageHistory, ResourceTable, StatusBar
-
-if TYPE_CHECKING:
-    from strata_tui.api.tokens import StoredToken
-
-
-SYSTEM_PROMPT = (
-    "You are Strata, an AI co-pilot for managing Kubernetes clusters. "
-    "Phase 1 placeholder: the agent-driven tool calls land in Phase 2. "
-    "For now, use the :command palette for cluster operations "
-    "(:get pods, :ctx list, :ctx use <name>)."
+from strata_tui.api.tokens import StoredToken, clear_token, load_token
+from strata_tui.commands import (
+    ApplyCommand,
+    ContextCommand,
+    DeleteCommand,
+    ExecCommand,
+    GetCommand,
+    parse_command_line,
 )
+from strata_tui.config import load_settings
+from strata_tui.screens import ConfirmScreen, LoginScreen
+from strata_tui.widgets import MessageHistory, ResourceTable, StatusBar
 
 
 class StrataTUIApp(App):
@@ -55,7 +53,9 @@ class StrataTUIApp(App):
     def __init__(self) -> None:
         super().__init__()
         self._settings = load_settings()
-        self._llm: ChatOpenAI | None = None
+        self._llm: Any = None
+        self._agent_graph: Any = None
+        self._thread_id: str = "session-1"
         self._stored_token: StoredToken | None = None
         self._client: StrataClient | None = None
         self._active_cluster: Cluster | None = None
@@ -85,8 +85,18 @@ class StrataTUIApp(App):
                 api_key=self._settings.api_key or "missing",
                 temperature=self._settings.temperature,
             )
+            self._setup_agent_graph()
         except Exception as exc:  # noqa: BLE001
             self.history.append_error(f"LLM init failed: {exc}")
+
+    def _setup_agent_graph(self) -> None:
+        if self._llm is None:
+            return
+        tools = build_strata_tools(
+            lambda: self._client,
+            lambda: self._active_cluster.id if self._active_cluster else None,
+        )
+        self._agent_graph = create_agent_graph(self._llm, tools)
 
     async def _bootstrap_session(self) -> None:
         history = self.history
@@ -163,10 +173,11 @@ class StrataTUIApp(App):
         self.query_one("#input", Input).value = ""
         cmd, args = parse_command_line(text)
         if cmd:
-            asyncio.create_task(self._dispatch_command(cmd, args))
+            self._dispatch_command(cmd, args)
             return
         self._chat(text)
 
+    @work
     async def _dispatch_command(self, cmd: str, args: list[str]) -> None:
         if cmd == "login":
             await self._run_login()
@@ -183,6 +194,15 @@ class StrataTUIApp(App):
         if cmd == "get":
             await GetCommand(self).execute(args)
             return
+        if cmd == "delete":
+            await DeleteCommand(self).execute(args)
+            return
+        if cmd == "apply":
+            await ApplyCommand(self).execute(args)
+            return
+        if cmd == "exec":
+            await ExecCommand(self).execute(args)
+            return
         if cmd == "ctx":
             await ContextCommand(self).execute(args)
             return
@@ -198,7 +218,10 @@ class StrataTUIApp(App):
             "  :logout                           Clear the cached token\n"
             "  :ctx list                         List your registered clusters\n"
             "  :ctx use <id-or-name>             Switch the active cluster\n"
-            "  :get pods [-n ns] [-l k=v]         List pods in the active cluster\n"
+            "  :get pods [-n ns] [-l k=v]        List pods in the active cluster\n"
+            "  :delete pod <name> [-n ns]        Delete pod (MUTATION, prompts confirm)\n"
+            "  :apply -f <file.yaml> [-n ns]     Apply manifest (MUTATION, prompts confirm)\n"
+            "  :exec <pod> [-c c] [-n ns] -- cmd Exec in pod (MUTATION, prompts confirm)\n"
             "  :help                             Show this help\n"
             "\nAnything else goes to the chat rail."
         )
@@ -226,28 +249,71 @@ class StrataTUIApp(App):
         self._apply_token(stored)
         await self._refresh_identity()
 
-    # ── chat rail (BYOK, no agent in Phase 1) ─────────────────────
+    # ── chat rail (LangGraph agent with Human-in-the-Loop) ──────────
 
     def _chat(self, text: str) -> None:
         self.history.append_user(text)
         if self._llm is None:
             self.history.append_error("LLM not initialised — check MINIMAX_API_KEY in tui/.env")
             return
+        if self._agent_graph is None:
+            self._setup_agent_graph()
         self._run_turn(text)
 
-    @work(thread=True, exclusive=True)
-    def _run_turn(self, text: str) -> None:
-        assert self._llm is not None
+    @work(exclusive=True)
+    async def _run_turn(self, text: str) -> None:
+        if self._agent_graph is None:
+            self.history.append_error("Agent graph not available")
+            return
         status = self.status
-        self.call_from_thread(status.set_busy, True)
+        status.set_busy(True)
+        config = {"configurable": {"thread_id": self._thread_id}}
         try:
-            messages = [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=text)]
-            response = self._llm.invoke(messages)
-            self.call_from_thread(self.history.append_ai, response.content)
+            result = await self._agent_graph.ainvoke(
+                {"messages": [HumanMessage(content=text)]}, config
+            )
+
+            state = await self._agent_graph.aget_state(config)
+            while state.next:
+                interrupt_val = None
+                if state.tasks and state.tasks[0].interrupts:
+                    interrupt_val = state.tasks[0].interrupts[0].value
+
+                action = (
+                    interrupt_val.get("tool", "mutation")
+                    if isinstance(interrupt_val, dict)
+                    else "mutation"
+                )
+                target = (
+                    str(interrupt_val.get("args", ""))
+                    if isinstance(interrupt_val, dict)
+                    else ""
+                )
+                cluster_name = self.active_cluster.name if self.active_cluster else ""
+
+                screen = ConfirmScreen(
+                    action=action,
+                    target=target,
+                    cluster=cluster_name,
+                    warning="Agent requested a mutating cluster action.",
+                )
+                approved = await self.push_screen_wait(screen)
+                if not approved:
+                    self.history.append_info(f"action {action!r} denied")
+
+                result = await self._agent_graph.ainvoke(Command(resume=bool(approved)), config)
+                state = await self._agent_graph.aget_state(config)
+
+            messages = result.get("messages", [])
+            if messages:
+                last_msg = messages[-1]
+                content = getattr(last_msg, "content", str(last_msg))
+                if content:
+                    self.history.append_ai(content)
         except Exception as exc:  # noqa: BLE001
-            self.call_from_thread(self.history.append_error, f"LLM call failed: {exc}")
+            self.history.append_error(f"LLM call failed: {exc}")
         finally:
-            self.call_from_thread(status.set_busy, False)
+            status.set_busy(False)
 
     # ── action handlers ────────────────────────────────────────────
 
