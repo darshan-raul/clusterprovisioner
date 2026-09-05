@@ -36,3 +36,19 @@ CREATE TABLE IF NOT EXISTS cluster_creds (
     encrypted_kubeconfig TEXT NOT NULL DEFAULT '',
     dek_ciphertext       TEXT NOT NULL DEFAULT ''
 );
+
+-- Phase 5 adds audit trail / action history for user mutations and actions
+CREATE TABLE IF NOT EXISTS action_history (
+    id           TEXT PRIMARY KEY,
+    user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    cluster_id   TEXT NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+    action_type  TEXT NOT NULL,
+    target       TEXT NOT NULL,
+    status       TEXT NOT NULL,
+    details      TEXT NOT NULL DEFAULT '',
+    client_type  TEXT NOT NULL DEFAULT 'tui',
+    created_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_action_history_user ON action_history (user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_action_history_cluster ON action_history (cluster_id, created_at DESC);

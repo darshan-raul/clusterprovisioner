@@ -52,6 +52,8 @@ type ClusterStore interface {
 	GetCluster(ctx context.Context, userID, clusterID string) (*store.Cluster, error)
 	CreateCluster(ctx context.Context, c store.Cluster, creds store.ClusterCreds) error
 	DeleteCluster(ctx context.Context, userID, clusterID string) error
+	RecordAction(ctx context.Context, a store.ActionHistory) error
+	ListHistory(ctx context.Context, userID, clusterID string, limit int) ([]store.ActionHistory, error)
 }
 
 // MCPCaller is the subset of the MCP client that the handlers use.
@@ -82,6 +84,7 @@ func (s *Server) Router() http.Handler {
 
 	r.Get("/healthz", s.handleHealthz)
 	r.Get("/api/v1/me", s.authMiddleware(s.handleMe))
+	r.Get("/api/v1/history", s.authMiddleware(s.handleListHistory))
 
 	// Cluster routes
 	r.Route("/api/v1/clusters", func(r chi.Router) {
@@ -89,6 +92,7 @@ func (s *Server) Router() http.Handler {
 		r.Post("/", s.authMiddleware(s.handleCreateCluster))
 		r.Route("/{id}", func(r chi.Router) {
 			r.Delete("/", s.authMiddleware(s.handleDeleteCluster))
+			r.Get("/history", s.authMiddleware(s.handleListClusterHistory))
 			r.Get("/pods", s.authMiddleware(s.handleListPods))
 			r.Delete("/pods/{name}", s.authMiddleware(s.handleDeletePod))
 			r.Post("/apply", s.authMiddleware(s.handleApplyManifest))
@@ -237,6 +241,12 @@ func (s *Server) handleCreateCluster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	clientType := r.Header.Get("X-Strata-Client")
+	if clientType == "" {
+		clientType = "web"
+	}
+	s.recordAction(r.Context(), claims.Subject, clusterID, "create_cluster", name, "success", "", clientType)
+
 	writeJSON(w, http.StatusCreated, map[string]any{"cluster": cluster})
 }
 
@@ -262,7 +272,96 @@ func (s *Server) handleDeleteCluster(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "delete cluster failed")
 		return
 	}
+
+	clientType := r.Header.Get("X-Strata-Client")
+	if clientType == "" {
+		clientType = "web"
+	}
+	s.recordAction(r.Context(), claims.Subject, clusterID, "delete_cluster", clusterID, "success", "", clientType)
+
 	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "cluster_id": clusterID})
+}
+
+func (s *Server) recordAction(ctx context.Context, userID, clusterID, actionType, target, status, details, clientType string) {
+	randBytes := make([]byte, 6)
+	_, _ = rand.Read(randBytes)
+	actID := fmt.Sprintf("act-%x", randBytes)
+
+	if clientType == "" {
+		clientType = "tui"
+	}
+	_ = s.store.RecordAction(ctx, store.ActionHistory{
+		ID:         actID,
+		UserID:     userID,
+		ClusterID:  clusterID,
+		ActionType: actionType,
+		Target:     target,
+		Status:     status,
+		Details:    details,
+		ClientType: clientType,
+		CreatedAt:  time.Now().UTC(),
+	})
+}
+
+// handleListHistory returns the authenticated user's action audit history.
+func (s *Server) handleListHistory(w http.ResponseWriter, r *http.Request) {
+	claims, _ := claimsFrom(r)
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "no claims")
+		return
+	}
+	clusterID := r.URL.Query().Get("cluster_id")
+	limitStr := r.URL.Query().Get("limit")
+	limit := 50
+	if limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+			limit = l
+		}
+	}
+	items, err := s.store.ListHistory(r.Context(), claims.Subject, clusterID, limit)
+	if err != nil {
+		s.log.Error().Err(err).Msg("list history")
+		writeError(w, http.StatusInternalServerError, "failed to list history")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"history": items})
+}
+
+// handleListClusterHistory returns action audit history for a specific cluster.
+func (s *Server) handleListClusterHistory(w http.ResponseWriter, r *http.Request) {
+	claims, _ := claimsFrom(r)
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "no claims")
+		return
+	}
+	clusterID := chi.URLParam(r, "id")
+	if clusterID == "" {
+		writeError(w, http.StatusBadRequest, "cluster id required")
+		return
+	}
+	if _, err := s.store.GetCluster(r.Context(), claims.Subject, clusterID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "cluster not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "cluster lookup failed")
+		return
+	}
+
+	limitStr := r.URL.Query().Get("limit")
+	limit := 50
+	if limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+			limit = l
+		}
+	}
+	items, err := s.store.ListHistory(r.Context(), claims.Subject, clusterID, limit)
+	if err != nil {
+		s.log.Error().Err(err).Str("cluster_id", clusterID).Msg("list cluster history")
+		writeError(w, http.StatusInternalServerError, "failed to list cluster history")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"history": items})
 }
 
 func attachClusterCreds(cluster *store.Cluster, args map[string]any, headers http.Header) {
@@ -387,11 +486,14 @@ func (s *Server) handleDeletePod(w http.ResponseWriter, r *http.Request) {
 	attachClusterCreds(cluster, args, headers)
 
 	result, err := s.mcp.CallToolWithHeaders(r.Context(), "delete_pod", args, headers)
+	clientType := r.Header.Get("X-Strata-Client")
 	if err != nil {
 		s.log.Error().Err(err).Str("cluster_id", clusterID).Str("pod", podName).Msg("mcp delete_pod")
+		s.recordAction(r.Context(), claims.Subject, clusterID, "delete_pod", namespace+"/"+podName, "failed", err.Error(), clientType)
 		writeError(w, http.StatusBadGateway, fmt.Sprintf("mcp call failed: %v", err))
 		return
 	}
+	s.recordAction(r.Context(), claims.Subject, clusterID, "delete_pod", namespace+"/"+podName, "success", "", clientType)
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(result)
 }
@@ -448,11 +550,14 @@ func (s *Server) handleApplyManifest(w http.ResponseWriter, r *http.Request) {
 	attachClusterCreds(cluster, args, headers)
 
 	result, err := s.mcp.CallToolWithHeaders(r.Context(), "apply_manifest", args, headers)
+	clientType := r.Header.Get("X-Strata-Client")
 	if err != nil {
 		s.log.Error().Err(err).Str("cluster_id", clusterID).Msg("mcp apply_manifest")
+		s.recordAction(r.Context(), claims.Subject, clusterID, "apply_manifest", req.Namespace, "failed", err.Error(), clientType)
 		writeError(w, http.StatusBadGateway, fmt.Sprintf("mcp call failed: %v", err))
 		return
 	}
+	s.recordAction(r.Context(), claims.Subject, clusterID, "apply_manifest", req.Namespace, "success", "", clientType)
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(result)
 }
@@ -515,11 +620,15 @@ func (s *Server) handleExecCommand(w http.ResponseWriter, r *http.Request) {
 	attachClusterCreds(cluster, args, headers)
 
 	result, err := s.mcp.CallToolWithHeaders(r.Context(), "exec_command", args, headers)
+	clientType := r.Header.Get("X-Strata-Client")
+	cmdStr := fmt.Sprintf("%v", req.Command)
 	if err != nil {
 		s.log.Error().Err(err).Str("cluster_id", clusterID).Str("pod", podName).Msg("mcp exec_command")
+		s.recordAction(r.Context(), claims.Subject, clusterID, "exec_command", req.Namespace+"/"+podName, "failed", err.Error(), clientType)
 		writeError(w, http.StatusBadGateway, fmt.Sprintf("mcp call failed: %v", err))
 		return
 	}
+	s.recordAction(r.Context(), claims.Subject, clusterID, "exec_command", req.Namespace+"/"+podName, "success", cmdStr, clientType)
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(result)
 }

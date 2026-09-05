@@ -240,6 +240,88 @@ func TestEnsureUser_RequiresFields(t *testing.T) {
 	}
 }
 
+func TestRecordAndListHistory(t *testing.T) {
+	db := openTestDB(t)
+	s := New(db)
+	ctx := context.Background()
+
+	_ = s.EnsureUser(ctx, User{ID: "u-1", Username: "alice"})
+	_ = s.EnsureUser(ctx, User{ID: "u-2", Username: "bob"})
+
+	_ = s.CreateCluster(ctx, Cluster{ID: "cl-1", UserID: "u-1", Name: "c1", Context: "ctx1"}, ClusterCreds{})
+	_ = s.CreateCluster(ctx, Cluster{ID: "cl-2", UserID: "u-1", Name: "c2", Context: "ctx2"}, ClusterCreds{})
+	_ = s.CreateCluster(ctx, Cluster{ID: "cl-3", UserID: "u-2", Name: "c3", Context: "ctx3"}, ClusterCreds{})
+
+	// Record actions
+	a1 := ActionHistory{
+		ID:         "act-1",
+		UserID:     "u-1",
+		ClusterID:  "cl-1",
+		ActionType: "delete_pod",
+		Target:     "default/nginx",
+		Status:     "success",
+		ClientType: "tui",
+	}
+	a2 := ActionHistory{
+		ID:         "act-2",
+		UserID:     "u-1",
+		ClusterID:  "cl-2",
+		ActionType: "apply_manifest",
+		Target:     "1 resource(s)",
+		Status:     "success",
+		ClientType: "tui_agent",
+	}
+	a3 := ActionHistory{
+		ID:         "act-3",
+		UserID:     "u-2",
+		ClusterID:  "cl-3",
+		ActionType: "exec_command",
+		Target:     "default/pod",
+		Status:     "success",
+		ClientType: "web",
+	}
+
+	if err := s.RecordAction(ctx, a1); err != nil {
+		t.Fatalf("RecordAction 1: %v", err)
+	}
+	if err := s.RecordAction(ctx, a2); err != nil {
+		t.Fatalf("RecordAction 2: %v", err)
+	}
+	if err := s.RecordAction(ctx, a3); err != nil {
+		t.Fatalf("RecordAction 3: %v", err)
+	}
+
+	// List all history for u-1
+	hist, err := s.ListHistory(ctx, "u-1", "", 10)
+	if err != nil {
+		t.Fatalf("ListHistory: %v", err)
+	}
+	if len(hist) != 2 {
+		t.Fatalf("expected 2 items for u-1, got %d", len(hist))
+	}
+
+	// List history for u-1 filtered by cl-1
+	histCl1, err := s.ListHistory(ctx, "u-1", "cl-1", 10)
+	if err != nil {
+		t.Fatalf("ListHistory cl-1: %v", err)
+	}
+	if len(histCl1) != 1 || histCl1[0].ID != "act-1" {
+		t.Errorf("expected act-1, got %+v", histCl1)
+	}
+
+	// Deleting cl-1 should cascade delete act-1
+	if err := s.DeleteCluster(ctx, "u-1", "cl-1"); err != nil {
+		t.Fatalf("DeleteCluster: %v", err)
+	}
+	histAfterDelete, err := s.ListHistory(ctx, "u-1", "cl-1", 10)
+	if err != nil {
+		t.Fatalf("ListHistory after delete: %v", err)
+	}
+	if len(histAfterDelete) != 0 {
+		t.Errorf("expected 0 items after cascade delete, got %d", len(histAfterDelete))
+	}
+}
+
 // _ keeps the sql import referenced in case the test file is
 // refactored later (sql is referenced by the package's ErrNotFound).
 var _ = sql.ErrNoRows

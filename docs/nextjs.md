@@ -20,25 +20,41 @@ Strata's web tier is built with [Next.js 15](https://nextjs.org/) using the **Ap
 ```
 web/
 ├── app/
-│   ├── api/auth/
-│   │   ├── login/route.ts       # PKCE challenge + Keycloak redirect
-│   │   ├── callback/route.ts    # Code exchange + session cookie issue
-│   │   └── logout/route.ts      # Session wipe + Keycloak logout redirect
-│   ├── dashboard/page.tsx       # Protected cluster viewer & profile
-│   ├── device/page.tsx          # TUI device verification helper
-│   ├── login/page.tsx           # Sign-in UI
-│   ├── signup/page.tsx          # Keycloak user registration trigger
-│   ├── layout.tsx               # Root dark-mode terminal layout
-│   ├── page.tsx                 # Landing page
-│   └── globals.css              # Tailwind CSS styles
+│   ├── api/
+│   │   ├── auth/
+│   │   │   ├── login/route.ts       # PKCE challenge + Keycloak redirect
+│   │   │   ├── callback/route.ts    # Code exchange + session cookie issue
+│   │   │   └── logout/route.ts      # Session wipe + Keycloak logout redirect
+│   │   ├── clusters/
+│   │   │   ├── route.ts             # POST create cluster with encrypted kubeconfig
+│   │   │   └── [id]/
+│   │   │       ├── route.ts         # DELETE cluster
+│   │   │       ├── pods/route.ts    # GET cluster pods
+│   │   │       └── history/route.ts # GET cluster audit history
+│   │   └── history/
+│   │       └── route.ts             # GET user audit history
+│   ├── dashboard/
+│   │   ├── page.tsx                 # Protected cluster viewer & profile
+│   │   ├── cluster-manager.tsx      # Cluster registration modal & table
+│   │   ├── history-feed.tsx         # Real-time audit trail / activity list
+│   │   └── clusters/[id]/
+│   │       ├── page.tsx             # Server component cluster resource browser
+│   │       └── cluster-detail-client.tsx # Pods table, filtering, inspection modal
+│   ├── device/page.tsx              # TUI device verification helper
+│   ├── login/page.tsx               # Sign-in UI
+│   ├── signup/page.tsx              # Keycloak user registration trigger
+│   ├── layout.tsx                   # Root dark-mode terminal layout
+│   ├── page.tsx                     # Landing page
+│   └── globals.css                  # Tailwind CSS styles
 ├── lib/
-│   ├── auth.ts                  # PKCE generator & Keycloak endpoints
-│   ├── session.ts               # Encrypted cookie handling via `jose`
-│   └── orchestrator.ts          # Server-side REST client for orchestrator
+│   ├── auth.ts                      # PKCE generator & Keycloak endpoints
+│   ├── session.ts                   # Encrypted cookie handling via `jose`
+│   └── orchestrator.ts              # Server-side REST client for orchestrator
 ├── tests/
-│   └── auth.test.ts             # Vitest test suite
-├── Dockerfile                   # Standalone multi-stage build (<150MB)
-└── package.json                 # Next 15 + React 19 + Jose + Tailwind
+│   ├── auth.test.ts                 # Vitest auth test suite
+│   └── clusters.test.ts             # Vitest cluster, pods, and history tests
+├── Dockerfile                       # Standalone multi-stage build (<150MB)
+└── package.json                     # Next 15 + React 19 + Jose + Tailwind
 ```
 
 ---

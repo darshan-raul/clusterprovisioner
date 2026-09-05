@@ -15,12 +15,14 @@ type fakeStore struct {
 	mu       sync.Mutex
 	users    map[string]store.User
 	clusters map[string]store.Cluster
+	history  []store.ActionHistory
 }
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{
 		users:    map[string]store.User{},
 		clusters: map[string]store.Cluster{},
+		history:  []store.ActionHistory{},
 	}
 }
 
@@ -73,7 +75,45 @@ func (f *fakeStore) DeleteCluster(_ context.Context, userID, clusterID string) e
 		return store.ErrNotFound
 	}
 	delete(f.clusters, clusterID)
+	// cascade history deletion
+	var filtered []store.ActionHistory
+	for _, a := range f.history {
+		if a.ClusterID != clusterID {
+			filtered = append(filtered, a)
+		}
+	}
+	f.history = filtered
 	return nil
+}
+
+func (f *fakeStore) RecordAction(_ context.Context, a store.ActionHistory) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.history = append(f.history, a)
+	return nil
+}
+
+func (f *fakeStore) ListHistory(_ context.Context, userID, clusterID string, limit int) ([]store.ActionHistory, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	var out []store.ActionHistory
+	for i := len(f.history) - 1; i >= 0; i-- {
+		a := f.history[i]
+		if a.UserID != userID {
+			continue
+		}
+		if clusterID != "" && a.ClusterID != clusterID {
+			continue
+		}
+		out = append(out, a)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
 }
 
 // fakeMCP implements MCPCaller for tests. The configured result is

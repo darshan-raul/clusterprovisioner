@@ -8,55 +8,54 @@
 
 ## Current phase
 
-**Phase 5 — Web dashboard.** (queued)
+## Current phase
 
-Phase 4 (Encrypted cluster registry) is complete. End-to-end encrypted cluster registration, AES-256-GCM storage in Postgres via CloudNativePG schema, in-memory decryption in the FastMCP Kubernetes server without writing credentials to disk, Next.js dashboard cluster management with modal form & file upload, and TUI `:ctx` active cluster highlighting, registration, and switching are fully implemented and verified.
+**Phase 6 — RAG (per-user).** (queued)
 
----
-
-## What's done in Phase 4
-
-- [x] **Shared AES-256-GCM Crypto Module (`backend/services/shared/pkg/crypto`):**
-  - SHA-256 key derivation (`DeriveKey`), authenticated encryption with 12-byte random nonce (`Encrypt`), and authenticated decryption with integrity tag check (`Decrypt`).
-  - Cross-compatible byte format verified between Go and Python `cryptography.hazmat.primitives.ciphers.aead.AESGCM`.
-  - Comprehensive unit tests in `crypto_test.go` including roundtrip, wrong key rejection, tampered ciphertext rejection, and cross-language ciphertext decryption.
-- [x] **PostgreSQL Schema & Store Layer (`backend/services/orchestrator/internal/store`):**
-  - Updated `0001_init.sql` schema: `cluster_creds` now supports `encrypted_kubeconfig TEXT` and `dek_ciphertext TEXT`.
-  - Updated `store.Cluster` struct with `EncryptedKubeconfig` and `DEKCiphertext` marked `json:"-"` so ciphertext is never leaked to API responses.
-  - Added `store.ClusterCreds` and updated `CreateCluster` to store encrypted credentials.
-  - Added `DeleteCluster` with `ON DELETE CASCADE` ensuring associated credentials are deleted cleanly.
-  - Unit tests in `store_test.go` (100% passing).
-- [x] **Orchestrator REST Endpoints (`backend/services/orchestrator/internal/api`):**
-  - Added `POST /api/v1/clusters` (`handleCreateCluster`): validates kubeconfig YAML, extracts context, encrypts credentials via AES-256-GCM, stores cluster, and returns 201 Created.
-  - Added `DELETE /api/v1/clusters/{id}` (`handleDeleteCluster`): deletes user cluster with cross-tenant authorization checks.
-  - Added `attachClusterCreds` helper to propagate `args["kubeconfig_encrypted"]` and `X-Strata-Encrypted-Kubeconfig` header to MCP tool calls.
-  - Added unit test cases in `clusters_test.go` (100% passing).
-- [x] **FastMCP In-Memory Decryption (`backend/mcp-servers/k8s`):**
-  - Created `strata_mcp_k8s/crypto.py` with AES-256-GCM decryption using `cryptography` AEAD.
-  - Updated `strata_mcp_k8s/kube.py` `load_kubeconfig` to accept `kubeconfig_encrypted` and load directly via `kubernetes.config.load_kube_config_from_dict` without disk writes.
-  - Updated all tools (`list_pods`, `delete_pod`, `apply_manifest`, `exec_command`) to pass `kubeconfig_encrypted` through.
-  - Added unit tests in `tests/test_crypto.py` (22 tests in suite, 100% passing).
-- [x] **Next.js Web Dashboard Cluster Manager (`web/`):**
-  - Added `createCluster` and `deleteCluster` to `web/lib/orchestrator.ts`.
-  - Created API route handlers `/api/clusters` (POST) and `/api/clusters/[id]` (DELETE) with session authentication.
-  - Created `ClusterManager` client component in `web/app/dashboard/cluster-manager.tsx` with modal for uploading/pasting kubeconfigs, validating, and deleting.
-  - Integrated into `web/app/dashboard/page.tsx` and validated production build (`next build`) and unit tests in `web/tests/clusters.test.ts` (8 vitest tests, 100% passing).
-- [x] **Textual TUI Context Management (`tui/strata_tui`):**
-  - Updated `StrataClient` with `create_cluster` and `delete_cluster`.
-  - Updated `ContextCommand` (`:ctx`) to highlight the active cluster with `*` in `:ctx list`.
-  - Added `:ctx add <name> <file> [context]` to register local kubeconfig files with the backend and set active context.
-  - Added `:ctx delete <name-or-id>` to remove registered clusters.
-  - Added unit tests in `tui/tests/test_api.py` and `tui/tests/test_commands.py` (42 tests in suite, 100% passing).
+Phase 5 (Web dashboard) is complete. The read-only web dashboard features a cluster manager, per-cluster Kubernetes resource browser (`/dashboard/clusters/[id]`), pod inspection drawer with TUI command snippets, live workload metrics, namespace & status filters, and an end-to-end action audit trail (`/api/v1/history`) capturing mutations across TUI, agent, and web surfaces.
 
 ---
 
-## What's next (Phase 5)
+## What's done in Phase 5
+
+- [x] **Audit Trail Schema & Store Layer (`backend/services/orchestrator/internal/store`):**
+  - Added `action_history` table in `0001_init.sql` with foreign keys referencing `users(id)` and `clusters(id)` with `ON DELETE CASCADE`, indexed on `(user_id, created_at DESC)` and `(cluster_id, created_at DESC)`.
+  - Implemented `store.ActionHistory` model and `RecordAction` / `ListHistory` store methods with limit clamping.
+  - Comprehensive unit tests in `store_test.go` verifying action insertion, filtering by user/cluster, and cascade deletion.
+- [x] **Orchestrator Audit Logging & History Endpoints (`backend/services/orchestrator/internal/api`):**
+  - Added `GET /api/v1/history` for user audit trail and `GET /api/v1/clusters/{id}/history` for cluster-specific activity.
+  - Wired `recordAction` helper into all mutation and lifecycle handlers (`handleCreateCluster`, `handleDeleteCluster`, `handleDeletePod`, `handleApplyManifest`, `handleExecCommand`) tracking `action_type`, `target`, `status` (`success`/`failed`), `details`, and `client_type` (`tui`, `tui_agent`, `web`).
+  - Added fake store history methods and unit tests in `fakes_test.go` and `clusters_test.go`.
+- [x] **Next.js API Routes & Data Layer (`web/lib/orchestrator.ts`, `web/app/api`):**
+  - Added `Pod` and `ActionHistoryItem` TypeScript interfaces, `fetchCluster`, `fetchPods`, and `fetchHistory`.
+  - Created Next.js Route Handlers:
+    - `web/app/api/clusters/[id]/pods/route.ts` (query parameters for `namespace`, `label_selector`).
+    - `web/app/api/clusters/[id]/history/route.ts` (query parameter for `limit`).
+    - `web/app/api/history/route.ts` (query parameters for `cluster_id`, `limit`).
+  - Vitest test coverage in `web/tests/clusters.test.ts` (11 tests in suite, 100% passing).
+- [x] **Next.js Resource Browser & Audit UI (`web/app/dashboard`):**
+  - Built `ClusterDetailClient` and server component at `/dashboard/clusters/[id]`:
+    - Summary banner with cluster context, ready badge, registration date, and live refresh button.
+    - Read-only safety invariant notice emphasizing TUI as sole mutating surface.
+    - Quick metrics bar (Total, Running, Pending, Failed/Issues).
+    - Instant search filter, namespace filter, and status filter dropdown.
+    - Pods table with color-coded status badges and container readiness.
+    - Pod inspection drawer modal with metadata and copyable TUI command examples.
+    - Tabbed view switching between Pods and Cluster Audit History.
+  - Built `HistoryFeed` component in `web/app/dashboard/history-feed.tsx` showing status, action pills, target, client badges (`[TUI]`, `[AGENT]`, `[WEB]`), and timestamps.
+  - Enhanced `ClusterManager` with "Browse" links and integrated `HistoryFeed` on the main dashboard (`/dashboard`).
+  - Verified production bundle (`next build`) and linting (`next lint`).
+
+---
+
+## What's next (Phase 6)
 
 See [AGENTS.md §5](AGENTS.md#5-build-phases).
 
-- **Web Dashboard Resource Browser:** Read-only viewer for pods, deployments, services across registered clusters.
-- **Action History View:** View of recent TUI / agent commands and mutation audit trails.
-- **Cluster Status Indicator:** Real-time health check / connectivity indicator for registered clusters in the dashboard.
+- **Qdrant Vector Database:** Qdrant in backend cluster with per-user collections (`user_{user_id}`).
+- **RAG Indexer (`backend/services/rag-indexer/`):** Go service ingesting cluster state (pods, events, nodes) periodically into vector collections.
+- **Retriever Service (`backend/services/retriever/`):** Go service exposing `/retrieve` endpoint queried by the agent.
+- **LangGraph Retrieval Node:** Agent service incorporates `retrieve` node with conditional routing.
 
 ---
 
@@ -86,3 +85,13 @@ See [AGENTS.md §5](AGENTS.md#5-build-phases).
 - Built Next.js cluster manager modal with kubeconfig upload/paste, route handlers, and Vitest test coverage.
 - Enhanced TUI `:ctx` with active cluster indicator (`*`), `:ctx add`, and `:ctx delete`.
 - Verified all tiers (Backend, MCP, Web, TUI) with 100% pass rate. Phase 4 closed.
+
+### Session 6 — Phase 5 Web Dashboard (Resource Browser & Audit Trail)
+
+- Created PostgreSQL `action_history` audit table and store layer methods (`RecordAction`, `ListHistory`) with user & cluster cascading foreign keys and indexes.
+- Added orchestrator `GET /api/v1/history` and `GET /api/v1/clusters/{id}/history` REST endpoints with limit validation and cross-tenant filtering.
+- Instrumented all cluster lifecycle and mutation endpoints (`create_cluster`, `delete_cluster`, `delete_pod`, `apply_manifest`, `exec_command`) to log audit actions with status and client type (`tui`, `tui_agent`, `web`).
+- Added Next.js client methods and route handlers for pods and history (`/api/clusters/[id]/pods`, `/api/clusters/[id]/history`, `/api/history`).
+- Built read-only Kubernetes resource browser (`/dashboard/clusters/[id]`) with live pod metrics, search & namespace filters, status badges, and pod inspection drawer modal with copyable TUI commands.
+- Built `HistoryFeed` component and integrated into the main dashboard and cluster details view.
+- Verified all tiers: Go backend tests + lint, FastMCP k8s tests + lint, Next.js build + vitest + eslint, and Textual TUI tests + lint. Phase 5 closed.

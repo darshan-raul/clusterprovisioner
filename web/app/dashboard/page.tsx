@@ -1,8 +1,9 @@
 import { redirect } from "next/navigation";
 import { Terminal } from "lucide-react";
 import { getSession } from "@/lib/session";
-import { fetchClusters, fetchUserMe } from "@/lib/orchestrator";
+import { fetchClusters, fetchUserMe, fetchHistory } from "@/lib/orchestrator";
 import { ClusterManager } from "./cluster-manager";
+import { HistoryFeed } from "./history-feed";
 
 export default async function DashboardPage() {
   const session = await getSession();
@@ -10,9 +11,10 @@ export default async function DashboardPage() {
     redirect("/login");
   }
 
-  const [clusters] = await Promise.all([
+  const [clusters, , history] = await Promise.all([
     fetchClusters(session.accessToken),
     fetchUserMe(session.accessToken),
+    fetchHistory(session.accessToken, undefined, 25),
   ]);
 
   return (
@@ -48,6 +50,9 @@ export default async function DashboardPage() {
 
       {/* Clusters Management Section */}
       <ClusterManager initialClusters={clusters} />
+
+      {/* Audit Trail / History Section */}
+      <HistoryFeed history={history} />
 
       {/* TUI Quickstart card */}
       <div className="p-6 rounded-2xl bg-gradient-to-br from-slate-900/90 to-sky-950/30 border border-sky-900/40 flex flex-col gap-4">

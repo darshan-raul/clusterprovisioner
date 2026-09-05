@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Server, Plus, Trash2, CheckCircle2, Lock, Upload, X, AlertCircle } from "lucide-react";
+import { Server, Plus, Trash2, CheckCircle2, Lock, Upload, X, AlertCircle, Layers, ExternalLink } from "lucide-react";
 import { Cluster } from "@/lib/orchestrator";
 
 export function ClusterManager({ initialClusters }: { initialClusters: Cluster[] }) {
@@ -149,7 +149,16 @@ export function ClusterManager({ initialClusters }: { initialClusters: Cluster[]
               {clusters.map((cluster) => (
                 <tr key={cluster.id} className="hover:bg-slate-800/30 transition-colors">
                   <td className="py-3.5 px-4 text-sky-400 font-semibold">{cluster.id}</td>
-                  <td className="py-3.5 px-4 text-white font-sans">{cluster.name}</td>
+                  <td className="py-3.5 px-4">
+                    <a
+                      href={`/dashboard/clusters/${cluster.id}`}
+                      className="text-white hover:text-sky-400 font-sans font-medium inline-flex items-center gap-1.5 transition-colors group"
+                      title="Inspect cluster resources"
+                    >
+                      <span>{cluster.name}</span>
+                      <ExternalLink className="w-3 h-3 opacity-0 group-hover:opacity-100 transition-opacity text-sky-400" />
+                    </a>
+                  </td>
                   <td className="py-3.5 px-4 text-slate-300">{cluster.context}</td>
                   <td className="py-3.5 px-4">
                     <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-950/80 border border-emerald-800/60 text-emerald-400 text-[11px]">
@@ -161,14 +170,24 @@ export function ClusterManager({ initialClusters }: { initialClusters: Cluster[]
                     {new Date(cluster.created_at).toLocaleDateString()}
                   </td>
                   <td className="py-3.5 px-4 text-right">
-                    <button
-                      onClick={() => handleDelete(cluster.id, cluster.name)}
-                      disabled={deletingId === cluster.id}
-                      className="p-1 rounded text-slate-400 hover:text-rose-400 transition-colors"
-                      title="Remove cluster"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                    <div className="flex items-center justify-end gap-2">
+                      <a
+                        href={`/dashboard/clusters/${cluster.id}`}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-sky-400 hover:text-sky-300 text-[11px] font-sans transition-colors"
+                        title="Browse Kubernetes resources"
+                      >
+                        <Layers className="w-3.5 h-3.5" />
+                        <span>Browse</span>
+                      </a>
+                      <button
+                        onClick={() => handleDelete(cluster.id, cluster.name)}
+                        disabled={deletingId === cluster.id}
+                        className="p-1 rounded text-slate-400 hover:text-rose-400 transition-colors"
+                        title="Remove cluster"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}

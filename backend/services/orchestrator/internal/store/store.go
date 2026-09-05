@@ -42,6 +42,19 @@ type User struct {
 	CreatedAt time.Time `db:"created_at" json:"created_at"`
 }
 
+// ActionHistory represents an audited action taken on a cluster.
+type ActionHistory struct {
+	ID         string    `db:"id"          json:"id"`
+	UserID     string    `db:"user_id"     json:"user_id"`
+	ClusterID  string    `db:"cluster_id"  json:"cluster_id"`
+	ActionType string    `db:"action_type" json:"action_type"`
+	Target     string    `db:"target"      json:"target"`
+	Status     string    `db:"status"      json:"status"`
+	Details    string    `db:"details"     json:"details"`
+	ClientType string    `db:"client_type" json:"client_type"`
+	CreatedAt  time.Time `db:"created_at"  json:"created_at"`
+}
+
 // Store is the orchestrator's data access layer.
 type Store struct {
 	db *sqlx.DB
@@ -161,6 +174,53 @@ func (s *Store) DeleteCluster(ctx context.Context, userID, clusterID string) err
 		return ErrNotFound
 	}
 	return nil
+}
+
+// RecordAction logs an action into the audit trail.
+func (s *Store) RecordAction(ctx context.Context, a ActionHistory) error {
+	const q = `
+		INSERT INTO action_history (id, user_id, cluster_id, action_type, target, status, details, client_type, created_at)
+		VALUES (:id, :user_id, :cluster_id, :action_type, :target, :status, :details, :client_type, :created_at)
+	`
+	if a.CreatedAt.IsZero() {
+		a.CreatedAt = time.Now().UTC()
+	}
+	if _, err := s.db.NamedExecContext(ctx, q, a); err != nil {
+		return fmt.Errorf("RecordAction: %w", err)
+	}
+	return nil
+}
+
+// ListHistory returns the user's action history, optionally filtered by clusterID.
+func (s *Store) ListHistory(ctx context.Context, userID, clusterID string, limit int) ([]ActionHistory, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	var out []ActionHistory
+	if clusterID != "" {
+		const q = `
+			SELECT id, user_id, cluster_id, action_type, target, status, details, client_type, created_at
+			FROM action_history
+			WHERE user_id = $1 AND cluster_id = $2
+			ORDER BY created_at DESC
+			LIMIT $3
+		`
+		if err := s.db.SelectContext(ctx, &out, q, userID, clusterID, limit); err != nil {
+			return nil, fmt.Errorf("ListHistory: %w", err)
+		}
+	} else {
+		const q = `
+			SELECT id, user_id, cluster_id, action_type, target, status, details, client_type, created_at
+			FROM action_history
+			WHERE user_id = $1
+			ORDER BY created_at DESC
+			LIMIT $2
+		`
+		if err := s.db.SelectContext(ctx, &out, q, userID, limit); err != nil {
+			return nil, fmt.Errorf("ListHistory: %w", err)
+		}
+	}
+	return out, nil
 }
 
 // sqlxNoRows is unused now — keep an alias for any future caller

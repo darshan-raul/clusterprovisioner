@@ -92,7 +92,98 @@ export async function deleteCluster(
     method: "DELETE",
     headers: {
       Authorization: `Bearer ${accessToken}`,
+      "X-Strata-Client": "web",
     },
   });
   return res.ok;
+}
+
+export interface Pod {
+  name: string;
+  namespace: string;
+  node: string | null;
+  phase: string;
+  ready: string;
+  restarts: number;
+  age: string;
+}
+
+export interface ActionHistoryItem {
+  id: string;
+  user_id: string;
+  cluster_id: string;
+  action_type: string;
+  target: string;
+  status: string;
+  details: string;
+  client_type: string;
+  created_at: string;
+}
+
+export async function fetchCluster(
+  accessToken: string,
+  clusterId: string
+): Promise<Cluster | null> {
+  const clusters = await fetchClusters(accessToken);
+  return clusters.find((c) => c.id === clusterId) || null;
+}
+
+export async function fetchPods(
+  accessToken: string,
+  clusterId: string,
+  namespace?: string,
+  labelSelector?: string
+): Promise<Pod[]> {
+  try {
+    const params = new URLSearchParams();
+    if (namespace) params.set("namespace", namespace);
+    if (labelSelector) params.set("label-selector", labelSelector);
+    const qs = params.toString() ? `?${params.toString()}` : "";
+    const res = await fetch(
+      `${getOrchestratorUrl()}/api/v1/clusters/${clusterId}/pods${qs}`,
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "X-Strata-Client": "web",
+        },
+        cache: "no-store",
+      }
+    );
+    if (!res.ok) return [];
+    return (await res.json()) as Pod[];
+  } catch {
+    return [];
+  }
+}
+
+export async function fetchHistory(
+  accessToken: string,
+  clusterId?: string,
+  limit?: number
+): Promise<ActionHistoryItem[]> {
+  try {
+    let url: string;
+    const params = new URLSearchParams();
+    if (limit) params.set("limit", String(limit));
+    const qs = params.toString() ? `?${params.toString()}` : "";
+
+    if (clusterId) {
+      url = `${getOrchestratorUrl()}/api/v1/clusters/${clusterId}/history${qs}`;
+    } else {
+      url = `${getOrchestratorUrl()}/api/v1/history${qs}`;
+    }
+
+    const res = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "X-Strata-Client": "web",
+      },
+      cache: "no-store",
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return (data.history || []) as ActionHistoryItem[];
+  } catch {
+    return [];
+  }
 }

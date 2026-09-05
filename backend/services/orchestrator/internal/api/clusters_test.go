@@ -515,3 +515,96 @@ func strconvQuote(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
 }
+
+func TestListHistory_EndToEnd(t *testing.T) {
+	ts, srv, priv := testServer(t)
+	seedAlice(srv)
+
+	tok := mintToken(t, priv, "test-kid", "alice", "strata-tui", false)
+
+	// Perform a pod deletion
+	delReq, _ := http.NewRequest(http.MethodDelete, ts.URL+"/api/v1/clusters/cl-001/pods/nginx-pod?namespace=prod", nil)
+	delReq.Header.Set("Authorization", "Bearer "+tok)
+	delReq.Header.Set("X-Strata-Client", "tui")
+	delResp, err := http.DefaultClient.Do(delReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delResp.Body.Close()
+	if delResp.StatusCode != http.StatusOK {
+		t.Fatalf("delete pod status = %d", delResp.StatusCode)
+	}
+
+	// Query history
+	histReq, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/v1/history", nil)
+	histReq.Header.Set("Authorization", "Bearer "+tok)
+	histResp, err := http.DefaultClient.Do(histReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer histResp.Body.Close()
+	if histResp.StatusCode != http.StatusOK {
+		t.Fatalf("history status = %d", histResp.StatusCode)
+	}
+
+	var histBody struct {
+		History []store.ActionHistory `json:"history"`
+	}
+	if err := json.NewDecoder(histResp.Body).Decode(&histBody); err != nil {
+		t.Fatal(err)
+	}
+	if len(histBody.History) != 1 {
+		t.Fatalf("expected 1 history item, got %d", len(histBody.History))
+	}
+	item := histBody.History[0]
+	if item.ActionType != "delete_pod" {
+		t.Errorf("expected action delete_pod, got %s", item.ActionType)
+	}
+	if item.Target != "prod/nginx-pod" {
+		t.Errorf("expected target prod/nginx-pod, got %s", item.Target)
+	}
+	if item.Status != "success" {
+		t.Errorf("expected status success, got %s", item.Status)
+	}
+	if item.ClientType != "tui" {
+		t.Errorf("expected client_type tui, got %s", item.ClientType)
+	}
+}
+
+func TestListClusterHistory_FilterAndNotFound(t *testing.T) {
+	ts, srv, priv := testServer(t)
+	seedAlice(srv)
+
+	tok := mintToken(t, priv, "test-kid", "alice", "strata-tui", false)
+
+	// Non-existent cluster history returns 404
+	badReq, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/v1/clusters/non-existent/history", nil)
+	badReq.Header.Set("Authorization", "Bearer "+tok)
+	badResp, err := http.DefaultClient.Do(badReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	badResp.Body.Close()
+	if badResp.StatusCode != http.StatusNotFound {
+		t.Errorf("expected 404 for non-existent cluster history, got %d", badResp.StatusCode)
+	}
+
+	// Valid cluster returns empty list initially
+	goodReq, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/v1/clusters/cl-001/history", nil)
+	goodReq.Header.Set("Authorization", "Bearer "+tok)
+	goodResp, err := http.DefaultClient.Do(goodReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer goodResp.Body.Close()
+	if goodResp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 for valid cluster history, got %d", goodResp.StatusCode)
+	}
+	var histBody struct {
+		History []store.ActionHistory `json:"history"`
+	}
+	_ = json.NewDecoder(goodResp.Body).Decode(&histBody)
+	if len(histBody.History) != 0 {
+		t.Errorf("expected 0 items initially, got %d", len(histBody.History))
+	}
+}
